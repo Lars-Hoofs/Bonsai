@@ -108,4 +108,46 @@ describe('tenants e2e', () => {
       .send({ email: 'ghost@x.eu', role: 'agent' })
       .expect(404);
   });
+
+  it('sub-admin member gets 403 when trying to add a tenant member', async () => {
+    // Create a new tenant for this scenario to avoid state coupling
+    await request(app.getHttpServer())
+      .post('/v1/tenants')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'SubAdminTest', slug: 'subadmin-test' })
+      .expect(201);
+
+    const {
+      rows: [tenantRow],
+    } = await pool.query<{ id: string }>(
+      `SELECT id FROM tenants WHERE slug = 'subadmin-test'`,
+    );
+    const tenantId = tenantRow.id;
+
+    // Mint a token for an editor user
+    const editorToken = await idp.sign({
+      sub: 'oidc|editor',
+      email: 'editor@acme.eu',
+    });
+
+    // Mirror the editor user in the database by calling an authenticated endpoint
+    await request(app.getHttpServer())
+      .get('/v1/tenants')
+      .set('Authorization', `Bearer ${editorToken}`)
+      .expect(200);
+
+    // Owner adds the editor as a non-admin member (editor role) to the tenant
+    await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/members`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ email: 'editor@acme.eu', role: 'editor' })
+      .expect(201);
+
+    // Now, as the editor (sub-admin), attempt to add a member and verify 403
+    await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/members`)
+      .set('Authorization', `Bearer ${editorToken}`)
+      .send({ email: 'stranger@x.eu', role: 'viewer' })
+      .expect(403);
+  });
 });

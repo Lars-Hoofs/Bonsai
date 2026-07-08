@@ -1,5 +1,5 @@
 import { IsEmail, IsIn, IsString, Length, Matches } from 'class-validator';
-import { Role } from '../db/schema';
+import type { Role } from '../db/schema';
 
 export class CreateTenantDto {
   @IsString() @Length(2, 100) name!: string;
