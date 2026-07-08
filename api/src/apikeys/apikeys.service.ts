@@ -4,7 +4,13 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { AuditService } from '../audit/audit.service';
 import { DB } from '../db/db.module';
 import type { Db } from '../db/db.module';
-import { apiKeys } from '../db/schema';
+import { apiKeys, tenants } from '../db/schema';
+
+export interface ResolvedWidgetKey {
+  tenantId: string;
+  projectId: string;
+  schemaName: string;
+}
 
 export function hashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
@@ -46,6 +52,7 @@ export class ApiKeysService {
     input: {
       name: string;
       kind: ApiKeyKind;
+      projectId?: string;
       scopes?: string[];
       allowedOrigins?: string[];
     },
@@ -56,6 +63,7 @@ export class ApiKeysService {
       .insert(apiKeys)
       .values({
         tenantId,
+        projectId: input.projectId,
         name: input.name,
         keyPrefix: prefix,
         keyHash: hash,
@@ -72,6 +80,43 @@ export class ApiKeysService {
       metadata: { kind: input.kind },
     });
     return { id: row.id, key, keyPrefix: prefix };
+  }
+
+  /**
+   * Resolves a public_widget key for anonymous widget delivery: the key must be
+   * a non-revoked public_widget key bound to a project, and — if the key
+   * declares allowed origins — the request Origin must match one of them.
+   * Returns the tenant schema + project so the caller can serve that project's
+   * published widget theme.
+   */
+  async resolveWidgetKey(
+    key: string,
+    origin: string | undefined,
+  ): Promise<ResolvedWidgetKey | null> {
+    const [row] = await this.db
+      .select()
+      .from(apiKeys)
+      .where(
+        and(
+          eq(apiKeys.keyHash, hashKey(key)),
+          isNull(apiKeys.revokedAt),
+          eq(apiKeys.kind, 'public_widget'),
+        ),
+      );
+    if (!row || !row.projectId) return null;
+    if (row.allowedOrigins.length > 0) {
+      if (!origin || !row.allowedOrigins.includes(origin)) return null;
+    }
+    const [tenant] = await this.db
+      .select({ schemaName: tenants.schemaName })
+      .from(tenants)
+      .where(eq(tenants.id, row.tenantId));
+    if (!tenant) return null;
+    return {
+      tenantId: row.tenantId,
+      projectId: row.projectId,
+      schemaName: tenant.schemaName,
+    };
   }
 
   async verify(key: string): Promise<VerifiedKey | null> {

@@ -55,6 +55,7 @@ export const apiKeys = pgTable('api_keys', {
   tenantId: uuid('tenant_id')
     .notNull()
     .references(() => tenants.id, { onDelete: 'cascade' }),
+  projectId: uuid('project_id'),
   name: text('name').notNull(),
   keyPrefix: text('key_prefix').notNull().unique(),
   keyHash: text('key_hash').notNull(),

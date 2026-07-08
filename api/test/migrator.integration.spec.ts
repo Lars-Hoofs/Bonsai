@@ -30,6 +30,7 @@ describe('migrator', () => {
       '0002_vector.sql',
       '0003_usage.sql',
       '0004_user_email_unique.sql',
+      '0005_apikey_project.sql',
     ]);
     const second = await runMigrations(pool, {
       dir: CONTROLPLANE_DIR,
