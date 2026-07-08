@@ -1,15 +1,26 @@
-import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import {
+  ExecutionContext,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { MembershipGuard } from './membership.guard';
+import { IS_PUBLIC } from './public.decorator';
 import { REQUIRED_ROLE } from './roles.decorator';
 
 function ctx(
   params: Record<string, string>,
   requiredRole?: string,
+  options?: { noUser?: boolean; isPublic?: boolean },
 ): ExecutionContext {
-  const req: Record<string, unknown> = { params, user: { id: 'u1' } };
+  const req: Record<string, unknown> = options?.noUser
+    ? { params }
+    : { params, user: { id: 'u1' } };
   const handler = (): void => undefined;
   Reflect.defineMetadata(REQUIRED_ROLE, requiredRole, handler);
+  if (options?.isPublic) {
+    Reflect.defineMetadata(IS_PUBLIC, true, handler);
+  }
   return {
     switchToHttp: () => ({ getRequest: () => req }),
     getHandler: () => handler,
@@ -49,5 +60,27 @@ describe('MembershipGuard', () => {
 
   it('passes through routes without :tenantId', async () => {
     await expect(guard.canActivate(ctx({}, undefined))).resolves.toBe(true);
+  });
+
+  it('passes through a @Public() route with :tenantId and no req.user', async () => {
+    const callsBefore = svc.find.mock.calls.length;
+    const c = ctx({ tenantId: 't1' }, undefined, {
+      noUser: true,
+      isPublic: true,
+    });
+    await expect(guard.canActivate(c)).resolves.toBe(true);
+    expect(svc.find.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('fails closed with UnauthorizedException when req.user is missing on a non-public route with :tenantId', async () => {
+    const c = ctx({ tenantId: 't1' }, 'viewer', { noUser: true });
+    await expect(guard.canActivate(c)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('fails closed when the membership lookup throws', async () => {
+    svc.find.mockRejectedValue(new Error('db unavailable'));
+    await expect(
+      guard.canActivate(ctx({ tenantId: 't1' }, 'viewer')),
+    ).rejects.toBeDefined();
   });
 });
