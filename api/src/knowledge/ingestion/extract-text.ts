@@ -34,6 +34,39 @@ export function extractTitle(html: string, fallback: string): string {
   return title.length > 0 ? title : fallback;
 }
 
+// Binary formats (pdf, docx) are parsed by third-party libraries running
+// against arbitrary attacker-supplied bytes, so we bound the work they can
+// do: cap the number of PDF pages parsed, cap wall-clock processing time
+// (a pathological file — e.g. a decompression bomb — must not hang a
+// worker), and cap the final extracted text length (bounds downstream
+// chunk/embedding fan-out regardless of how the text was produced).
+const MAX_PDF_PAGES = 200;
+const EXTRACTION_TIMEOUT_MS = 30_000;
+export const MAX_EXTRACTED_TEXT_LENGTH = 2_000_000;
+
+/** Truncates text to at most `maxLength` characters. Exported for testing. */
+export function truncateExtractedText(
+  text: string,
+  maxLength: number = MAX_EXTRACTED_TEXT_LENGTH,
+): string {
+  return text.length > maxLength ? text.slice(0, maxLength) : text;
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Extracts plain text from an uploaded file buffer by content type / filename.
  * Text formats (txt, md, csv, html) are handled natively. Binary formats
@@ -61,10 +94,24 @@ export async function extractUploadText(
     mimetype.includes('officedocument.wordprocessing') ||
     lower.endsWith('.docx');
 
-  if (isHtml) return htmlToText(buffer.toString('utf8'));
-  if (isText) return buffer.toString('utf8').trim();
-  if (isPdf) return (await extractPdf(buffer)).trim();
-  if (isDocx) return (await extractDocx(buffer)).trim();
+  if (isHtml) return truncateExtractedText(htmlToText(buffer.toString('utf8')));
+  if (isText) return truncateExtractedText(buffer.toString('utf8').trim());
+  if (isPdf) {
+    const text = await withTimeout(
+      extractPdf(buffer),
+      EXTRACTION_TIMEOUT_MS,
+      'PDF extraction',
+    );
+    return truncateExtractedText(text.trim());
+  }
+  if (isDocx) {
+    const text = await withTimeout(
+      extractDocx(buffer),
+      EXTRACTION_TIMEOUT_MS,
+      'DOCX extraction',
+    );
+    return truncateExtractedText(text.trim());
+  }
 
   throw new Error(
     `Unsupported upload type '${mimetype || filename}'. Supported: txt, md, csv, html, pdf, docx.`,
@@ -77,7 +124,7 @@ async function extractPdf(buffer: Buffer): Promise<string> {
   const { PDFParse } = await import('pdf-parse');
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
   try {
-    const result = await parser.getText();
+    const result = await parser.getText({ first: MAX_PDF_PAGES });
     return result.text;
   } finally {
     await parser.destroy();

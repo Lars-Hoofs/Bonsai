@@ -1,4 +1,10 @@
-import { extractTitle, extractUploadText, htmlToText } from './extract-text';
+import {
+  extractTitle,
+  extractUploadText,
+  htmlToText,
+  MAX_EXTRACTED_TEXT_LENGTH,
+  truncateExtractedText,
+} from './extract-text';
 
 describe('htmlToText', () => {
   it('strips tags, scripts and styles and keeps readable text', () => {
@@ -45,5 +51,31 @@ describe('extractUploadText', () => {
     await expect(
       extractUploadText('a.xyz', 'application/x-thing', Buffer.from([0x00])),
     ).rejects.toThrow(/Unsupported upload type/);
+  });
+
+  it('truncates extracted text that exceeds the length cap', async () => {
+    const huge = 'a'.repeat(MAX_EXTRACTED_TEXT_LENGTH + 1000);
+    const out = await extractUploadText(
+      'huge.txt',
+      'text/plain',
+      Buffer.from(huge),
+    );
+    expect(out.length).toBe(MAX_EXTRACTED_TEXT_LENGTH);
+  });
+});
+
+describe('truncateExtractedText', () => {
+  it('leaves short text untouched', () => {
+    expect(truncateExtractedText('hello')).toBe('hello');
+  });
+
+  it('truncates text longer than the default cap', () => {
+    const huge = 'x'.repeat(MAX_EXTRACTED_TEXT_LENGTH + 1);
+    const result = truncateExtractedText(huge);
+    expect(result.length).toBe(MAX_EXTRACTED_TEXT_LENGTH);
+  });
+
+  it('respects a custom max length', () => {
+    expect(truncateExtractedText('abcdef', 3)).toBe('abc');
   });
 });

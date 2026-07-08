@@ -16,6 +16,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser, Tenant } from '../auth/auth.types';
 import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
+import { sanitizeFilename } from '../storage/sanitize-filename';
 import { StorageService } from '../storage/storage.service';
 import { CreateSourceDto } from './dto';
 import { extractUploadText } from './ingestion/extract-text';
@@ -26,6 +27,13 @@ interface UploadedFileLike {
   mimetype: string;
   buffer: Buffer;
 }
+
+// Multer buffers the whole upload into memory (MemoryStorage), so an
+// unbounded file size is a memory-exhaustion DoS vector. Nest's
+// FileInterceptor already maps the resulting Multer `LIMIT_FILE_SIZE` error
+// to a clean PayloadTooLargeException (413) via its built-in
+// transformException — no extra exception mapping needed here.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 @Controller('tenants/:tenantId/projects/:projectId/knowledge')
 export class KnowledgeController {
@@ -47,7 +55,9 @@ export class KnowledgeController {
 
   @Post('sources/upload')
   @RequireRole('editor')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }),
+  )
   async upload(
     @Tenant() tenant: TenantRef,
     @Param('projectId', ParseUUIDPipe) projectId: string,
@@ -64,7 +74,7 @@ export class KnowledgeController {
     // download and audit); text extraction/indexing works regardless.
     let storageKey: string | undefined;
     if (this.storage.enabled) {
-      storageKey = `${tenant.schemaName}/uploads/${randomUUID()}-${file.originalname}`;
+      storageKey = `${tenant.schemaName}/uploads/${randomUUID()}-${sanitizeFilename(file.originalname)}`;
       await this.storage.put(storageKey, file.buffer, file.mimetype);
     }
     return this.knowledge.create(

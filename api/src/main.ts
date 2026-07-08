@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { SwaggerModule } from '@nestjs/swagger';
 import { Pool } from 'pg';
 import { AppModule } from './app.module';
@@ -13,8 +14,22 @@ import { requestIdMiddleware } from './common/request-id.middleware';
 import { buildOpenApiDocument } from './docs/openapi';
 import { stoplightHtml } from './docs/stoplight';
 
+// Applies to both JSON and urlencoded bodies (e.g. crawler config, website
+// theme JSON, CSV/manual knowledge source `body`/`csv` fields posted as
+// regular JSON). Generous enough for legitimate payloads, bounded so a
+// single POST can't exhaust memory.
+const MAX_JSON_BODY_SIZE = '2mb';
+
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // Default body parser disabled so we can register json/urlencoded parsers
+  // ourselves with an explicit size limit (see useBodyParser calls below).
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+  const expressApp = app as unknown as NestExpressApplication;
+  expressApp.useBodyParser('json', { limit: MAX_JSON_BODY_SIZE });
+  expressApp.useBodyParser('urlencoded', {
+    limit: MAX_JSON_BODY_SIZE,
+    extended: true,
+  });
   app.use(requestIdMiddleware);
   app.useGlobalPipes(
     new ValidationPipe({
