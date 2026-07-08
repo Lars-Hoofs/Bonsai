@@ -2,12 +2,15 @@
   "moduleFileExtensions": ["js", "json", "ts"],
   "rootDir": "..",
   "testRegex": ".integration.spec.ts$",
-  "transform": { "^.+\\.ts$": ["ts-jest", { "useESM": true }] },
+  "transform": {
+    "^.+\\.ts$": ["ts-jest", { "useESM": true }],
+    "^.+\\.js$": ["ts-jest", { "useESM": true }]
+  },
   "testEnvironment": "node",
   "testTimeout": 120000,
   "extensionsToTreatAsEsm": [".ts"],
   "moduleNameMapper": {
     "^(\\.{1,2}/.*)\\.js$": "$1"
   },
-  "transformIgnorePatterns": ["node_modules/(?!(jose)/)"]
+  "transformIgnorePatterns": []
 }
