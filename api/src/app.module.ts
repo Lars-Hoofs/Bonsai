@@ -9,6 +9,7 @@ import { ProjectsModule } from './projects/projects.module';
 import { ApiKeysModule } from './apikeys/apikeys.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { RagModule } from './rag/rag.module';
+import { ConversationsModule } from './conversations/conversations.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { RagModule } from './rag/rag.module';
     ApiKeysModule,
     KnowledgeModule,
     RagModule,
+    ConversationsModule,
   ],
   controllers: [HealthController],
 })
