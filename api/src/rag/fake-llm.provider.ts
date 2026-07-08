@@ -8,9 +8,12 @@ import { LlmMessage, LlmProvider } from './llm-provider';
  */
 export class FakeLlmProvider implements LlmProvider {
   complete(messages: LlmMessage[]): Promise<string> {
-    // Groundedness self-check calls carry the [[VERIFY]] marker; the fake
-    // considers grounded answers supported.
-    if (messages.some((m) => m.content.includes('[[VERIFY]]'))) {
+    // Groundedness self-check calls are routed via a distinct system-role
+    // instruction (BONSAI_SELF_CHECK_V1), never via shared/user content, so
+    // that retrieved knowledge-base text can never spoof a verify call. The
+    // fake considers grounded answers supported.
+    const system = messages.find((m) => m.role === 'system');
+    if (system?.content.includes('BONSAI_SELF_CHECK_V1')) {
       return Promise.resolve('{"supported": true}');
     }
     const user = [...messages].reverse().find((m) => m.role === 'user');
