@@ -10,6 +10,7 @@ import { ApiKeysModule } from './apikeys/apikeys.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { RagModule } from './rag/rag.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { WidgetModule } from './widget/widget.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { ConversationsModule } from './conversations/conversations.module';
     KnowledgeModule,
     RagModule,
     ConversationsModule,
+    WidgetModule,
   ],
   controllers: [HealthController],
 })
