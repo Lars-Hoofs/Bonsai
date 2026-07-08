@@ -11,6 +11,8 @@ import { KnowledgeModule } from './knowledge/knowledge.module';
 import { RagModule } from './rag/rag.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { WidgetModule } from './widget/widget.module';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { WidgetModule } from './widget/widget.module';
     RagModule,
     ConversationsModule,
     WidgetModule,
+    AnalyticsModule,
+    WebhooksModule,
   ],
   controllers: [HealthController],
 })

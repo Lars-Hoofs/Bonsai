@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { AnswerService } from '../rag/answer.service';
+import { WebhooksService } from '../webhooks/webhooks.service';
 
 export interface ConversationSummary {
   id: string;
@@ -26,6 +27,7 @@ export class ConversationsService {
   constructor(
     private readonly tenantDb: TenantDbService,
     private readonly answers: AnswerService,
+    private readonly webhooks: WebhooksService,
   ) {}
 
   async start(
@@ -140,6 +142,15 @@ export class ConversationsService {
             VALUES (${conversationId}, 'system', 'Gesprek doorgezet naar een medewerker.')`,
       );
     });
+    await this.webhooks.dispatch(
+      schemaName,
+      projectId,
+      'conversation.escalated',
+      {
+        conversationId,
+        reason,
+      },
+    );
   }
 
   async listInbox(
