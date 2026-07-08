@@ -14,6 +14,30 @@ import { CrawlService } from '../src/crawl/crawl.service';
 import { runControlPlaneMigrations } from '../src/db/run-control-plane-migrations';
 import * as schema from '../src/db/schema';
 import { startPg } from './helpers/pg';
+import * as safeFetchModule from '../src/common/safe-fetch';
+
+// The fixture web server below is a loopback (127.0.0.1) HTTP server, which
+// safeFetch's SSRF guard correctly rejects in production. Stub it here to
+// pass real requests through to the fixture server rather than weakening
+// the guard itself.
+jest.spyOn(safeFetchModule, 'safeFetch').mockImplementation(
+  async (
+    rawUrl: string,
+    opts?: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+    },
+  ) => {
+    const res = await fetch(rawUrl, {
+      method: opts?.method,
+      headers: opts?.headers,
+      body: opts?.body,
+    });
+    const body = await res.text();
+    return { status: res.status, body, finalUrl: rawUrl };
+  },
+);
 
 describe('scheduled re-crawl (BullMQ)', () => {
   let pgc: StartedPostgreSqlContainer;

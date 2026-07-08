@@ -2,6 +2,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
+import { safeFetch } from '../common/safe-fetch';
 
 export function signPayload(secret: string, body: string): string {
   return createHmac('sha256', secret).update(body).digest('hex');
@@ -101,7 +102,7 @@ export class WebhooksService {
     await Promise.all(
       hooks.map(async (h) => {
         try {
-          await fetch(h.url, {
+          await safeFetch(h.url, {
             method: 'POST',
             headers: {
               'content-type': 'application/json',

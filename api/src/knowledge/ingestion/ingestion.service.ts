@@ -8,6 +8,7 @@ import { EMBEDDING_PROVIDER } from '../embedding/embedding-provider';
 import type { EmbeddingProvider } from '../embedding/embedding-provider';
 import { csvToDocuments, RawDocument } from './csv';
 import { extractTitle, htmlToText } from './extract-text';
+import { safeFetch } from '../../common/safe-fetch';
 
 /** Maps a document language to a Postgres text-search configuration. */
 function regconfig(language: string): string {
@@ -139,9 +140,19 @@ export class IngestionService {
     if (type === 'website') {
       const url = str(config.url);
       if (!url) throw new Error('website source requires a url');
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`Fetch ${url} failed: ${res.status}`);
-      const html = await res.text();
+      let res: { status: number; body: string };
+      try {
+        res = await safeFetch(url, { maxBytes: 5_000_000 });
+      } catch {
+        // Generic message: the raw error (connection refused, DNS failure,
+        // "Blocked URL", etc.) must not leak to the tenant, or it becomes an
+        // oracle for scanning our internal network.
+        throw new Error('Kon de opgegeven URL niet ophalen');
+      }
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error('Kon de opgegeven URL niet ophalen');
+      }
+      const html = res.body;
       return [
         {
           title: extractTitle(html, url),
