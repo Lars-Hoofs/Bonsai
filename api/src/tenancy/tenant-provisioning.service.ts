@@ -102,7 +102,9 @@ export class TenantProvisioningService {
     } catch (err) {
       await this.dropSchemaQuietly(schemaName);
       if (isUniqueViolation(err))
-        throw new ConflictException(`Tenant slug '${input.slug}' already exists`);
+        throw new ConflictException(
+          `Tenant slug '${input.slug}' already exists`,
+        );
       throw err;
     }
     return { id: row.id, slug: row.slug, schemaName: row.schemaName };

@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { Pool } from 'pg';
 import { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -52,6 +53,30 @@ describe('TenantProvisioningService', () => {
     await expect(
       svc.createTenant({ name: 'Acme2', slug: 'acme' }),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it('resolves exactly one winner when two concurrent calls race on the same slug', async () => {
+    const results = await Promise.allSettled([
+      svc.createTenant({ name: 'X', slug: 'race' }),
+      svc.createTenant({ name: 'Y', slug: 'race' }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const rejectedReason = rejected[0].reason as unknown;
+    const isConflict =
+      rejectedReason instanceof ConflictException ||
+      /already exists/i.test(String(rejectedReason));
+    expect(isConflict).toBe(true);
+
+    const rows = await pool.query(
+      `SELECT count(*)::int AS count FROM public.tenants WHERE slug = $1`,
+      ['race'],
+    );
+    expect((rows.rows[0] as { count: number }).count).toBe(1);
   });
 
   it('drops the schema and writes no tenant row when migration fails after schema creation; the slug stays reusable', async () => {
