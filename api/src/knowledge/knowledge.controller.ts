@@ -43,14 +43,14 @@ export class KnowledgeController {
   @Post('sources/upload')
   @RequireRole('editor')
   @UseInterceptors(FileInterceptor('file'))
-  upload(
+  async upload(
     @Tenant() tenant: TenantRef,
     @Param('projectId', ParseUUIDPipe) projectId: string,
     @UploadedFile() file: UploadedFileLike | undefined,
     @CurrentUser() user: AuthUser,
   ) {
     if (!file) throw new BadRequestException('No file uploaded (field "file")');
-    const text = extractUploadText(
+    const text = await extractUploadText(
       file.originalname,
       file.mimetype,
       file.buffer,

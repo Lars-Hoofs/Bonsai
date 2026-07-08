@@ -19,17 +19,21 @@ describe('htmlToText', () => {
 });
 
 describe('extractUploadText', () => {
-  it('reads plain text and markdown', () => {
+  it('reads plain text and markdown', async () => {
     expect(
-      extractUploadText('a.txt', 'text/plain', Buffer.from('hallo wereld')),
+      await extractUploadText(
+        'a.txt',
+        'text/plain',
+        Buffer.from('hallo wereld'),
+      ),
     ).toBe('hallo wereld');
     expect(
-      extractUploadText('a.md', 'text/markdown', Buffer.from('# Titel')),
+      await extractUploadText('a.md', 'text/markdown', Buffer.from('# Titel')),
     ).toContain('# Titel');
   });
 
-  it('converts uploaded html to text', () => {
-    const out = extractUploadText(
+  it('converts uploaded html to text', async () => {
+    const out = await extractUploadText(
       'p.html',
       'text/html',
       Buffer.from('<p>Hoi</p>'),
@@ -37,9 +41,9 @@ describe('extractUploadText', () => {
     expect(out).toBe('Hoi');
   });
 
-  it('throws a clear error on unsupported binary types', () => {
-    expect(() =>
-      extractUploadText('a.pdf', 'application/pdf', Buffer.from([0x25, 0x50])),
-    ).toThrow(/Unsupported upload type/);
+  it('throws a clear error on truly unsupported types', async () => {
+    await expect(
+      extractUploadText('a.xyz', 'application/x-thing', Buffer.from([0x00])),
+    ).rejects.toThrow(/Unsupported upload type/);
   });
 });

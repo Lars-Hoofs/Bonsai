@@ -40,11 +40,11 @@ export function extractTitle(html: string, fallback: string): string {
  * (pdf, docx) require optional libraries; if unavailable we throw a clear error
  * rather than indexing garbage.
  */
-export function extractUploadText(
+export async function extractUploadText(
   filename: string,
   mimetype: string,
   buffer: Buffer,
-): string {
+): Promise<string> {
   const lower = filename.toLowerCase();
   const isHtml =
     mimetype.includes('html') ||
@@ -56,12 +56,43 @@ export function extractUploadText(
     lower.endsWith('.md') ||
     lower.endsWith('.markdown') ||
     lower.endsWith('.csv');
+  const isPdf = mimetype.includes('pdf') || lower.endsWith('.pdf');
+  const isDocx =
+    mimetype.includes('officedocument.wordprocessing') ||
+    lower.endsWith('.docx');
 
   if (isHtml) return htmlToText(buffer.toString('utf8'));
   if (isText) return buffer.toString('utf8').trim();
+  if (isPdf) return (await extractPdf(buffer)).trim();
+  if (isDocx) return (await extractDocx(buffer)).trim();
 
   throw new Error(
-    `Unsupported upload type '${mimetype || filename}'. Supported: txt, md, csv, html. ` +
-      `PDF/Word extraction can be enabled via an optional extractor.`,
+    `Unsupported upload type '${mimetype || filename}'. Supported: txt, md, csv, html, pdf, docx.`,
   );
+}
+
+// Heavy parsers are imported lazily so they (and pdfjs) only load when a binary
+// file is actually uploaded — keeping normal startup/tests light.
+async function extractPdf(buffer: Buffer): Promise<string> {
+  const { PDFParse } = await import('pdf-parse');
+  const parser = new PDFParse({ data: new Uint8Array(buffer) });
+  try {
+    const result = await parser.getText();
+    return result.text;
+  } finally {
+    await parser.destroy();
+  }
+}
+
+interface MammothLike {
+  extractRawText(input: { buffer: Buffer }): Promise<{ value: string }>;
+}
+
+async function extractDocx(buffer: Buffer): Promise<string> {
+  const mod = (await import('mammoth')) as unknown as {
+    default?: MammothLike;
+  } & MammothLike;
+  const mammoth: MammothLike = mod.default ?? mod;
+  const result = await mammoth.extractRawText({ buffer });
+  return result.value;
 }
