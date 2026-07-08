@@ -6,10 +6,12 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { CurrentUser, Tenant } from '../auth/auth.types';
 import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
+import { RateLimitGuard } from '../usage/rate-limit.guard';
 import { ConversationsService } from './conversations.service';
 import {
   AgentMessageDto,
@@ -34,6 +36,7 @@ export class ConversationsController {
 
   @Post(':conversationId/messages')
   @RequireRole('viewer')
+  @UseGuards(RateLimitGuard)
   postMessage(
     @Tenant() tenant: TenantRef,
     @Param('projectId', ParseUUIDPipe) projectId: string,
@@ -41,6 +44,7 @@ export class ConversationsController {
     @Body() dto: PostMessageDto,
   ) {
     return this.conversations.postVisitorMessage(
+      tenant.id,
       tenant.schemaName,
       projectId,
       conversationId,

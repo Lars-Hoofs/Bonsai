@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { AnswerService } from '../rag/answer.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
+import { UsageService } from '../usage/usage.service';
 
 export interface ConversationSummary {
   id: string;
@@ -28,6 +29,7 @@ export class ConversationsService {
     private readonly tenantDb: TenantDbService,
     private readonly answers: AnswerService,
     private readonly webhooks: WebhooksService,
+    private readonly usage: UsageService,
   ) {}
 
   async start(
@@ -53,6 +55,7 @@ export class ConversationsService {
    * conversation is already in handover, the message is stored for the agent.
    */
   async postVisitorMessage(
+    tenantId: string,
     schemaName: string,
     projectId: string,
     conversationId: string,
@@ -81,9 +84,12 @@ export class ConversationsService {
       return { status: convo.status };
     }
 
+    // Cost cap: an over-quota tenant cannot keep driving paid AI answers.
+    await this.usage.enforceAnswerQuota(tenantId);
     const started = Date.now();
     const answer = await this.answers.answer(schemaName, projectId, text);
     const latency = Date.now() - started;
+    await this.usage.recordAnswer(tenantId);
 
     await this.tenantDb.withTenant(schemaName, async (db) => {
       const m = await db.execute(

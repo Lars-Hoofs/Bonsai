@@ -19,6 +19,7 @@ const schema = z.object({
   LLM_API_URL: z.string().url().optional(),
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string().optional(),
+  RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(120),
 });
 
 export interface AppConfig {
@@ -35,6 +36,7 @@ export interface AppConfig {
   llmApiUrl?: string;
   llmApiKey?: string;
   llmModel?: string;
+  rateLimitPerMinute: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -61,5 +63,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     llmApiUrl: d.LLM_API_URL,
     llmApiKey: d.LLM_API_KEY,
     llmModel: d.LLM_MODEL,
+    rateLimitPerMinute: d.RATE_LIMIT_PER_MINUTE,
   };
 }

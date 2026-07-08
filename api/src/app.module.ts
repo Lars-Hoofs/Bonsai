@@ -13,6 +13,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { WidgetModule } from './widget/widget.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { UsageModule } from './usage/usage.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     WidgetModule,
     AnalyticsModule,
     WebhooksModule,
+    UsageModule,
   ],
   controllers: [HealthController],
 })
