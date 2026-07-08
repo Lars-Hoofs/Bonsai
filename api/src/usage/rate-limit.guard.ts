@@ -5,34 +5,56 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  mixin,
+  Type,
 } from '@nestjs/common';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 import type { TenantRef } from '../auth/auth.types';
+import type { ResolvedWidgetKey } from '../apikeys/apikeys.service';
 import { RateLimiterService } from './rate-limiter.service';
 
+interface RateLimitedRequest {
+  tenant?: TenantRef;
+  widgetKey?: ResolvedWidgetKey;
+  route?: { path?: string };
+  ip?: string;
+  socket?: { remoteAddress?: string };
+}
+
 /**
- * Per-tenant rate limit for expensive (AI) routes. Runs as a route-level guard,
- * so req.tenant is already set by MembershipGuard. Keyed by tenant + route.
+ * Per-caller rate limit guard. Runs as a route-level guard (or with an
+ * explicit `limit`/`windowMs` override for stricter public routes).
+ *
+ * Key derivation, in priority order — never a single shared literal, so
+ * unkeyed/anonymous callers don't all share one global bucket:
+ *  1. `req.tenant.id` — authenticated tenant routes (MembershipGuard has run).
+ *  2. `req.widgetKey.projectId` + client IP — public widget routes gated by
+ *     `PublicWidgetGuard` (must run before this guard so `widgetKey` is set).
+ *  3. Client IP alone — last resort for routes with no resolved identity yet
+ *     (e.g. widget config, which authenticates the key inside the handler).
  */
 @Injectable()
 export class RateLimitGuard implements CanActivate {
+  /** Optional stricter override; defaults to the tenant-route configured limit. */
+  protected readonly limit?: number;
+  protected readonly windowMs?: number;
+
   constructor(
-    private readonly limiter: RateLimiterService,
-    @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+    protected readonly limiter: RateLimiterService,
+    @Inject(APP_CONFIG) protected readonly cfg: AppConfig,
   ) {}
 
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest<{
-      tenant?: TenantRef;
-      route?: { path?: string };
-    }>();
-    const tenantId = req.tenant?.id ?? 'anonymous';
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    const req = ctx.switchToHttp().getRequest<RateLimitedRequest>();
     const route = req.route?.path ?? 'unknown';
-    const allowed = this.limiter.allow(
-      `${tenantId}:${route}`,
-      this.cfg.rateLimitPerMinute,
-      60_000,
+    const callerKey = this.callerKey(req);
+    const limit = this.limit ?? this.cfg.rateLimitPerMinute;
+    const windowMs = this.windowMs ?? 60_000;
+    const allowed = await this.limiter.allow(
+      `${callerKey}:${route}`,
+      limit,
+      windowMs,
       Date.now(),
     );
     if (!allowed) {
@@ -43,4 +65,36 @@ export class RateLimitGuard implements CanActivate {
     }
     return true;
   }
+
+  private callerKey(req: RateLimitedRequest): string {
+    if (req.tenant?.id) return `tenant:${req.tenant.id}`;
+    const ip = this.clientIp(req);
+    if (req.widgetKey?.projectId) {
+      return `project:${req.widgetKey.projectId}:ip:${ip}`;
+    }
+    return `ip:${ip}`;
+  }
+
+  private clientIp(req: RateLimitedRequest): string {
+    return req.ip ?? req.socket?.remoteAddress ?? 'unknown';
+  }
+}
+
+/**
+ * Builds a `RateLimitGuard` variant with a fixed limit/window, for public
+ * routes that need a stricter (or looser) throttle than the tenant-route
+ * default `RATE_LIMIT_PER_MINUTE`. Still resolves through Nest DI (via
+ * `mixin`), so it shares the same Redis-backed `RateLimiterService` and key
+ * derivation as the base guard.
+ */
+export function rateLimitGuard(
+  limit: number,
+  windowMs = 60_000,
+): Type<CanActivate> {
+  @Injectable()
+  class ScopedRateLimitGuard extends RateLimitGuard {
+    protected readonly limit = limit;
+    protected readonly windowMs = windowMs;
+  }
+  return mixin(ScopedRateLimitGuard);
 }

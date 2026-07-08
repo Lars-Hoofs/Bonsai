@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { Public } from '../auth/public.decorator';
-import { RateLimitGuard } from '../usage/rate-limit.guard';
+import { RateLimitGuard, rateLimitGuard } from '../usage/rate-limit.guard';
 import { ResolvedWidgetKey } from '../apikeys/apikeys.service';
 import { ConversationsService } from './conversations.service';
 import { PublicWidgetGuard } from './public-widget.guard';
@@ -21,6 +21,11 @@ import { EscalateDto, PostMessageDto, StartConversationDto } from './dto';
 interface WidgetKeyedRequest extends Request {
   widgetKey?: ResolvedWidgetKey;
 }
+
+// Per-project+IP: unbounded `start` calls create a conversation row (and, on
+// the first message, LLM spend) each time, so this needs its own tighter cap
+// independent of the general per-tenant/per-route limit used elsewhere.
+const START_CONVERSATION_LIMIT_PER_MINUTE = 20;
 
 function requireWidgetKey(req: WidgetKeyedRequest): ResolvedWidgetKey {
   // Invariant guard: PublicWidgetGuard always runs first and always sets
@@ -48,6 +53,7 @@ export class ConversationsPublicController {
   constructor(private readonly conversations: ConversationsService) {}
 
   @Post()
+  @UseGuards(rateLimitGuard(START_CONVERSATION_LIMIT_PER_MINUTE))
   async start(
     @Req() req: WidgetKeyedRequest,
     @Body() dto: StartConversationDto,

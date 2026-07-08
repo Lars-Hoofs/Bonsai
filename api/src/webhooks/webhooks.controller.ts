@@ -6,10 +6,12 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import { Tenant } from '../auth/auth.types';
 import type { TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
+import { RateLimitGuard } from '../usage/rate-limit.guard';
 import { CreateWebhookDto } from './dto';
 import { WebhooksService } from './webhooks.service';
 
@@ -19,6 +21,7 @@ export class WebhooksController {
   constructor(private readonly webhooks: WebhooksService) {}
 
   @Post()
+  @UseGuards(RateLimitGuard)
   create(
     @Tenant() tenant: TenantRef,
     @Param('projectId', ParseUUIDPipe) projectId: string,

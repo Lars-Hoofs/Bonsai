@@ -200,4 +200,37 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
       .set('x-bonsai-visitor-secret', 'whatever-secret-value-padding-out')
       .expect(404);
   });
+
+  it('rate-limits unbounded `start` calls (20/min/project+IP) with 429', async () => {
+    // Uses its own project + widget key so its bucket (keyed by
+    // project+IP) is independent of the `start` calls other tests in this
+    // file already made against the shared `widgetKey`/`projectId`.
+    const p = await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/projects`)
+      .set(auth())
+      .send({ name: 'RateLimitTarget' })
+      .expect(201);
+    const rlProjectId = (p.body as IdBody).id;
+    const key = await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/api-keys`)
+      .set(auth())
+      .send({
+        name: 'widget-rl',
+        kind: 'public_widget',
+        projectId: rlProjectId,
+      })
+      .expect(201);
+    const rlWidgetKey = (key.body as { key: string }).key;
+
+    const start = (): request.Test =>
+      request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', rlWidgetKey)
+        .send({ language: 'nl' });
+
+    for (let i = 0; i < 20; i++) {
+      await start().expect(201);
+    }
+    await start().expect(429);
+  });
 });
