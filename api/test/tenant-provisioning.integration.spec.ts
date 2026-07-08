@@ -32,7 +32,7 @@ describe('TenantProvisioningService', () => {
     const r = await pool.query(
       `SELECT count(*)::int AS count
        FROM information_schema.schemata
-       WHERE schema_name LIKE 't\_%'
+       WHERE schema_name LIKE 't\\_%'
          AND schema_name NOT IN (SELECT schema_name FROM public.tenants)`,
     );
     return (r.rows[0] as { count: number }).count;
@@ -83,9 +83,7 @@ describe('TenantProvisioningService', () => {
     const failing = new TenantProvisioningService(
       pool,
       drizzle(pool, { schema }),
-      async () => {
-        throw new Error('boom: simulated migration failure');
-      },
+      () => Promise.reject(new Error('boom: simulated migration failure')),
     );
 
     await expect(
