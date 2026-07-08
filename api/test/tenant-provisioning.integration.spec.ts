@@ -1,9 +1,11 @@
 import { Pool } from 'pg';
 import { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { eq } from 'drizzle-orm';
 import { TenantProvisioningService } from '../src/tenancy/tenant-provisioning.service';
 import { runMigrations, CONTROLPLANE_DIR } from '../src/db/migrator';
 import * as schema from '../src/db/schema';
+import { tenants } from '../src/db/schema';
 import { startPg } from './helpers/pg';
 
 describe('TenantProvisioningService', () => {
@@ -24,6 +26,17 @@ describe('TenantProvisioningService', () => {
     await container.stop();
   });
 
+  // Tenant schemas NOT referenced by any tenant row are orphans; healthy = 0.
+  const countOrphanSchemas = async (): Promise<number> => {
+    const r = await pool.query(
+      `SELECT count(*)::int AS count
+       FROM information_schema.schemata
+       WHERE schema_name LIKE 't\_%'
+         AND schema_name NOT IN (SELECT schema_name FROM public.tenants)`,
+    );
+    return (r.rows[0] as { count: number }).count;
+  };
+
   it('creates tenant row, schema, and tenant tables', async () => {
     const t = await svc.createTenant({ name: 'Acme', slug: 'acme' });
     expect(t.schemaName).toMatch(/^t_[0-9a-f]{32}$/);
@@ -32,6 +45,7 @@ describe('TenantProvisioningService', () => {
       [t.schemaName],
     );
     expect(r.rowCount).toBe(1);
+    expect(await countOrphanSchemas()).toBe(0);
   });
 
   it('rejects duplicate slug', async () => {
@@ -40,20 +54,35 @@ describe('TenantProvisioningService', () => {
     ).rejects.toThrow(/already exists/i);
   });
 
-  it('leaves no orphan schema behind after a rejected duplicate slug', async () => {
-    const countTenantSchemas = async (): Promise<number> => {
-      const r = await pool.query(
-        `SELECT count(*)::int AS count FROM information_schema.schemata WHERE schema_name LIKE 't\\_%'`,
-      );
-      return (r.rows[0] as { count: number }).count;
-    };
+  it('drops the schema and writes no tenant row when migration fails after schema creation; the slug stays reusable', async () => {
+    const failing = new TenantProvisioningService(
+      pool,
+      drizzle(pool, { schema }),
+      async () => {
+        throw new Error('boom: simulated migration failure');
+      },
+    );
 
-    const before = await countTenantSchemas();
     await expect(
-      svc.createTenant({ name: 'Acme3', slug: 'acme' }),
-    ).rejects.toThrow(/already exists/i);
-    const after = await countTenantSchemas();
+      failing.createTenant({ name: 'Broken', slug: 'broken-tenant' }),
+    ).rejects.toThrow(/boom: simulated migration failure/);
 
-    expect(after).toBe(before);
+    const rows = await pool.query(
+      `SELECT count(*)::int AS count FROM public.tenants WHERE slug = $1`,
+      ['broken-tenant'],
+    );
+    expect((rows.rows[0] as { count: number }).count).toBe(0);
+    expect(await countOrphanSchemas()).toBe(0);
+
+    const retried = await svc.createTenant({
+      name: 'Broken Retry',
+      slug: 'broken-tenant',
+    });
+    expect(retried.schemaName).toMatch(/^t_[0-9a-f]{32}$/);
+    const [persisted] = await drizzle(pool, { schema })
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, 'broken-tenant'));
+    expect(persisted.schemaName).toBe(retried.schemaName);
   });
 });
