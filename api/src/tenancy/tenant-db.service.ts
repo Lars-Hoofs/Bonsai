@@ -19,12 +19,13 @@ export class TenantDbService {
     try {
       await client.query('BEGIN');
       // Isolation by construction: the runtime tenant search_path is the
-      // tenant schema ONLY — `public` (which holds control-plane tables:
-      // tenants, users, memberships, api_keys, audit_log) is deliberately
-      // excluded so tenant-scoped code cannot reach another tenant's or the
-      // platform's data via an unqualified table reference. Built-ins
-      // (gen_random_uuid, now, ...) resolve from pg_catalog, always in path.
-      await client.query(`SET LOCAL search_path TO "${schemaName}"`);
+      // tenant schema plus `shared` (extensions only, e.g. pgvector) — but
+      // NOT `public`, which holds control-plane tables (tenants, users,
+      // memberships, api_keys, audit_log). Tenant-scoped code therefore
+      // cannot reach another tenant's or the platform's data via an
+      // unqualified table reference, while vector types/operators (in
+      // `shared`) and built-ins (pg_catalog) still resolve.
+      await client.query(`SET LOCAL search_path TO "${schemaName}", shared`);
       const result = await fn(drizzle(client));
       await client.query('COMMIT');
       return result;

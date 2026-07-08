@@ -25,7 +25,7 @@ describe('migrator', () => {
       schema: 'public',
       track: 'controlplane',
     });
-    expect(first).toEqual(['0001_init.sql']);
+    expect(first).toEqual(['0001_init.sql', '0002_vector.sql']);
     const second = await runMigrations(pool, {
       dir: CONTROLPLANE_DIR,
       schema: 'public',

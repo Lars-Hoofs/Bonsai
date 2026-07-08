@@ -22,6 +22,7 @@ export async function buildTestApp(
     oidcIssuer: TEST_ISSUER,
     oidcAudience: TEST_AUDIENCE,
     oidcJwksUrl: 'https://unused.example/keys',
+    embeddingDim: 1024,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(APP_CONFIG)
