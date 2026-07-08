@@ -5,6 +5,8 @@ import { APP_CONFIG, AppConfig } from '../config/config';
 import { AuthGuard } from './auth.guard';
 import { JWT_KEY_GETTER, OidcVerifier } from './oidc.verifier';
 import { UsersService } from './users.service';
+import { MembershipsService } from './memberships.service';
+import { MembershipGuard } from './membership.guard';
 
 @Module({
   providers: [
@@ -17,7 +19,9 @@ import { UsersService } from './users.service';
     OidcVerifier,
     UsersService,
     { provide: APP_GUARD, useClass: AuthGuard },
+    MembershipsService,
+    { provide: APP_GUARD, useClass: MembershipGuard },
   ],
-  exports: [OidcVerifier, UsersService],
+  exports: [OidcVerifier, UsersService, MembershipsService],
 })
 export class AuthModule {}
