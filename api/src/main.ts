@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import type { Request, Response } from 'express';
+import { SwaggerModule } from '@nestjs/swagger';
 import { Pool } from 'pg';
 import { AppModule } from './app.module';
 import { APP_CONFIG, type AppConfig } from './config/config';
@@ -8,6 +9,8 @@ import { PG_POOL } from './db/db.module';
 import { runControlPlaneMigrations } from './db/run-control-plane-migrations';
 import { HttpExceptionFilter } from './common/http-exception.filter';
 import { requestIdMiddleware } from './common/request-id.middleware';
+import { buildOpenApiDocument } from './docs/openapi';
+import { stoplightHtml } from './docs/stoplight';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
@@ -20,7 +23,9 @@ async function bootstrap(): Promise<void> {
     }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());
-  app.setGlobalPrefix('v1', { exclude: ['health', 'docs'] });
+  app.setGlobalPrefix('v1', {
+    exclude: ['health', 'docs', 'docs-json', 'reference'],
+  });
   app.enableShutdownHooks();
 
   // Run control-plane migrations before accepting traffic. The migrator
@@ -31,15 +36,15 @@ async function bootstrap(): Promise<void> {
 
   const config = app.get<AppConfig>(APP_CONFIG);
 
-  const document = SwaggerModule.createDocument(
-    app,
-    new DocumentBuilder()
-      .setTitle('Bonsai API')
-      .setVersion('0.1')
-      .addBearerAuth()
-      .build(),
-  );
-  SwaggerModule.setup('docs', app, document);
+  // OpenAPI spec at /docs-json, classic Swagger UI at /docs, and the
+  // Stoplight-Elements themed reference at /reference — all serving one spec.
+  const document = buildOpenApiDocument(app);
+  SwaggerModule.setup('docs', app, document, { jsonDocumentUrl: 'docs-json' });
+  app
+    .getHttpAdapter()
+    .get('/reference', (_req: Request, res: Response) =>
+      res.type('html').send(stoplightHtml('/docs-json')),
+    );
 
   await app.listen(config.port);
 }
