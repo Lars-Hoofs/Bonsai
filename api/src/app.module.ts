@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { HealthController } from './health/health.controller';
 import { DbModule } from './db/db.module';
 import { TenancyModule } from './tenancy/tenancy.module';
@@ -17,6 +18,7 @@ import { UsageModule } from './usage/usage.module';
 
 @Module({
   imports: [
+    EventEmitterModule.forRoot(),
     DbModule,
     TenancyModule,
     AuthModule,

@@ -1,9 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { AnswerService } from '../rag/answer.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { UsageService } from '../usage/usage.service';
+import { CHAT_MESSAGE_EVENT } from './chat.gateway';
 
 export interface ConversationSummary {
   id: string;
@@ -30,7 +32,12 @@ export class ConversationsService {
     private readonly answers: AnswerService,
     private readonly webhooks: WebhooksService,
     private readonly usage: UsageService,
+    private readonly events: EventEmitter2,
   ) {}
+
+  private emit(conversationId: string, role: string, content: string): void {
+    this.events.emit(CHAT_MESSAGE_EVENT, { conversationId, role, content });
+  }
 
   async start(
     schemaName: string,
@@ -79,6 +86,7 @@ export class ConversationsService {
       role: 'visitor',
       content: text,
     });
+    this.emit(conversationId, 'visitor', text);
 
     if (convo.status !== 'bot') {
       return { status: convo.status };
@@ -108,6 +116,7 @@ export class ConversationsService {
         sql`UPDATE conversations SET updated_at=now() WHERE id=${conversationId}`,
       );
     });
+    this.emit(conversationId, 'bot', answer.answer);
 
     return {
       status: 'bot',
@@ -148,6 +157,11 @@ export class ConversationsService {
             VALUES (${conversationId}, 'system', 'Gesprek doorgezet naar een medewerker.')`,
       );
     });
+    this.emit(
+      conversationId,
+      'system',
+      'Gesprek doorgezet naar een medewerker.',
+    );
     await this.webhooks.dispatch(
       schemaName,
       projectId,
@@ -227,6 +241,7 @@ export class ConversationsService {
         sql`UPDATE conversations SET updated_at=now() WHERE id=${conversationId}`,
       );
     });
+    this.emit(conversationId, 'agent', text);
   }
 
   async returnToBot(
