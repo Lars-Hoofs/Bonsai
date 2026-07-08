@@ -5,7 +5,7 @@ import { AppModule } from '../../src/app.module';
 import { APP_CONFIG, AppConfig } from '../../src/config/config';
 import { PG_POOL } from '../../src/db/db.module';
 import { JWT_KEY_GETTER } from '../../src/auth/oidc.verifier';
-import { CONTROLPLANE_DIR, runMigrations } from '../../src/db/migrator';
+import { runControlPlaneMigrations } from '../../src/db/run-control-plane-migrations';
 import { makeTestIdp, TEST_AUDIENCE, TEST_ISSUER, TestIdp } from './oidc';
 import { HttpExceptionFilter } from '../../src/common/http-exception.filter';
 import { requestIdMiddleware } from '../../src/common/request-id.middleware';
@@ -13,11 +13,7 @@ import { requestIdMiddleware } from '../../src/common/request-id.middleware';
 export async function buildTestApp(
   pool: Pool,
 ): Promise<{ app: INestApplication; idp: TestIdp }> {
-  await runMigrations(pool, {
-    dir: CONTROLPLANE_DIR,
-    schema: 'public',
-    track: 'controlplane',
-  });
+  await runControlPlaneMigrations(pool);
   const idp = await makeTestIdp();
   const cfg: AppConfig = {
     databaseUrl: 'overridden',
