@@ -6,7 +6,8 @@ import {
   ParseUUIDPipe,
   Post,
 } from '@nestjs/common';
-import { AuthUser, CurrentUser } from '../auth/auth.types';
+import { CurrentUser } from '../auth/auth.types';
+import type { AuthUser } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
 import { AddMemberDto, CreateTenantDto } from './dto';
 import { TenantsService } from './tenants.service';

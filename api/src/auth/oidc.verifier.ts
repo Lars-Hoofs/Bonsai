@@ -1,6 +1,8 @@
 import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
-import { JWTVerifyGetKey, jwtVerify } from 'jose';
-import { APP_CONFIG, AppConfig } from '../config/config';
+import { jwtVerify } from 'jose';
+import type { JWTVerifyGetKey } from 'jose';
+import { APP_CONFIG } from '../config/config';
+import type { AppConfig } from '../config/config';
 
 export const JWT_KEY_GETTER = Symbol('JWT_KEY_GETTER');
 

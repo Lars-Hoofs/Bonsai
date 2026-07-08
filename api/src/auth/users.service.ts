@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
-import { Db, DB } from '../db/db.module';
+import { DB } from '../db/db.module';
+import type { Db } from '../db/db.module';
 import { users } from '../db/schema';
-import { VerifiedClaims } from './oidc.verifier';
+import type { VerifiedClaims } from './oidc.verifier';
 
 @Injectable()
 export class UsersService {

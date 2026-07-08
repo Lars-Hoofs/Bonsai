@@ -2,8 +2,10 @@ import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { AuditService } from '../audit/audit.service';
 import { MembershipsService } from '../auth/memberships.service';
-import { Db, DB } from '../db/db.module';
-import { memberships, Role, tenants, users } from '../db/schema';
+import { DB } from '../db/db.module';
+import type { Db } from '../db/db.module';
+import { memberships, tenants, users } from '../db/schema';
+import type { Role } from '../db/schema';
 import { TenantProvisioningService } from '../tenancy/tenant-provisioning.service';
 
 @Injectable()

@@ -1,7 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
-import { Db, DB } from '../db/db.module';
-import { memberships, Role, tenants } from '../db/schema';
+import { DB } from '../db/db.module';
+import type { Db } from '../db/db.module';
+import { memberships, tenants } from '../db/schema';
+import type { Role } from '../db/schema';
 
 export interface MembershipWithTenant {
   role: Role;

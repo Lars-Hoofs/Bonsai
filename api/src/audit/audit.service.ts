@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { Db, DB } from '../db/db.module';
+import { DB } from '../db/db.module';
+import type { Db } from '../db/db.module';
 import { auditLog } from '../db/schema';
 
 export interface AuditEntry {
