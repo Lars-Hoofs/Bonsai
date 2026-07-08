@@ -1,8 +1,10 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { EMBEDDING_PROVIDER } from '../knowledge/embedding/embedding-provider';
 import type { EmbeddingProvider } from '../knowledge/embedding/embedding-provider';
+import { NoopRerankProvider, RERANK_PROVIDER } from './rerank-provider';
+import type { RerankProvider } from './rerank-provider';
 
 export interface RetrievedChunk {
   chunkId: string;
@@ -41,6 +43,9 @@ export class RetrievalService {
   constructor(
     private readonly tenantDb: TenantDbService,
     @Inject(EMBEDDING_PROVIDER) private readonly embedder: EmbeddingProvider,
+    @Optional()
+    @Inject(RERANK_PROVIDER)
+    private readonly reranker: RerankProvider = new NoopRerankProvider(),
   ) {}
 
   async retrieve(
@@ -50,6 +55,8 @@ export class RetrievalService {
     options: RetrieveOptions = {},
   ): Promise<RetrievedChunk[]> {
     const topK = options.topK ?? 6;
+    // Fetch a larger pool by RRF, then let the reranker pick the final top-k.
+    const pool = Math.max(topK * 3, 20);
     const candidates = Math.max(topK * 4, 20);
     const cfg = regconfig(options.language ?? 'nl');
     const [queryVec] = await this.embedder.embed([query]);
@@ -89,12 +96,12 @@ export class RetrievalService {
         WHERE c.project_id = ${projectId}
           AND (vec.id IS NOT NULL OR fts.id IS NOT NULL)
         ORDER BY score DESC
-        LIMIT ${topK}
+        LIMIT ${pool}
       `);
       return r.rows;
     });
 
-    return rows.map((row) => ({
+    const mapped = rows.map((row) => ({
       chunkId: row.chunk_id as string,
       documentId: row.document_id as string,
       sourceId: row.source_id as string,
@@ -104,5 +111,19 @@ export class RetrievalService {
       score: Number(row.score),
       similarity: Number(row.similarity),
     }));
+    if (mapped.length === 0) return [];
+
+    // Rerank the pool for precision; the reranker score takes precedence, with
+    // the RRF score as a stable tie-break. NoopReranker leaves RRF order intact.
+    const rerankScores = await this.reranker.rerank(
+      query,
+      mapped.map((m) => m.text),
+    );
+    const ranked = mapped
+      .map((m, i) => ({ m, rr: rerankScores[i] ?? 0 }))
+      .sort((a, b) => b.rr - a.rr || b.m.score - a.m.score)
+      .slice(0, topK)
+      .map((x) => x.m);
+    return ranked;
   }
 }

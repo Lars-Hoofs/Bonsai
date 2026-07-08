@@ -19,6 +19,11 @@ const schema = z.object({
   LLM_API_URL: z.string().url().optional(),
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string().optional(),
+  // Optional reranker (external API). Falls back to a deterministic lexical
+  // fake when unset, so retrieval still works offline/in tests.
+  RERANK_API_URL: z.string().url().optional(),
+  RERANK_API_KEY: z.string().optional(),
+  RERANK_MODEL: z.string().optional(),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(120),
   // Second-pass groundedness self-check (extra small LLM call). On by default;
   // can be disabled to trade a bit of safety for lower cost/latency.
@@ -42,6 +47,9 @@ export interface AppConfig {
   llmApiUrl?: string;
   llmApiKey?: string;
   llmModel?: string;
+  rerankApiUrl?: string;
+  rerankApiKey?: string;
+  rerankModel?: string;
   rateLimitPerMinute: number;
   selfCheckEnabled: boolean;
 }
@@ -70,6 +78,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     llmApiUrl: d.LLM_API_URL,
     llmApiKey: d.LLM_API_KEY,
     llmModel: d.LLM_MODEL,
+    rerankApiUrl: d.RERANK_API_URL,
+    rerankApiKey: d.RERANK_API_KEY,
+    rerankModel: d.RERANK_MODEL,
     rateLimitPerMinute: d.RATE_LIMIT_PER_MINUTE,
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
   };

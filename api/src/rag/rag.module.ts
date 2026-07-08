@@ -10,6 +10,9 @@ import { LLM_PROVIDER } from './llm-provider';
 import type { LlmProvider } from './llm-provider';
 import { HttpLlmProvider } from './http-llm.provider';
 import { FakeLlmProvider } from './fake-llm.provider';
+import { FakeRerankProvider, RERANK_PROVIDER } from './rerank-provider';
+import type { RerankProvider } from './rerank-provider';
+import { HttpRerankProvider } from './http-rerank.provider';
 
 @Module({
   imports: [TenancyModule, EmbeddingModule],
@@ -28,6 +31,20 @@ import { FakeLlmProvider } from './fake-llm.provider';
           });
         }
         return new FakeLlmProvider();
+      },
+      inject: [APP_CONFIG],
+    },
+    {
+      provide: RERANK_PROVIDER,
+      useFactory: (cfg: AppConfig): RerankProvider => {
+        if (cfg.rerankApiUrl && cfg.rerankApiKey && cfg.rerankModel) {
+          return new HttpRerankProvider({
+            url: cfg.rerankApiUrl,
+            apiKey: cfg.rerankApiKey,
+            model: cfg.rerankModel,
+          });
+        }
+        return new FakeRerankProvider();
       },
       inject: [APP_CONFIG],
     },
