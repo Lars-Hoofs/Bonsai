@@ -28,7 +28,15 @@ export class HttpEmbeddingProvider implements EmbeddingProvider {
         'content-type': 'application/json',
         authorization: `Bearer ${this.opts.apiKey}`,
       },
-      body: JSON.stringify({ model: this.opts.model, input: texts }),
+      // Request the exact output dimensionality. OpenAI-compatible embedding
+      // APIs (incl. Google Gemini's, and OpenAI text-embedding-3) honour this;
+      // required for Gemini's gemini-embedding-001 whose default (3072) would
+      // otherwise not match the pgvector column / configured dimension.
+      body: JSON.stringify({
+        model: this.opts.model,
+        input: texts,
+        dimensions: this.opts.dimension,
+      }),
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
