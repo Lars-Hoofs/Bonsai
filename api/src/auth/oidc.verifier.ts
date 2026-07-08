@@ -35,6 +35,11 @@ export class OidcVerifier {
       ) {
         throw new Error('missing claims');
       }
+      // Only trust a verified email. An unverified email must never be usable
+      // for identity/membership resolution (invite-by-email takeover vector).
+      if (payload.email_verified !== true) {
+        throw new Error('email not verified');
+      }
       return {
         sub: payload.sub,
         email: payload.email,

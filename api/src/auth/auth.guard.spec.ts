@@ -79,4 +79,14 @@ describe('AuthGuard', () => {
       guard.canActivate(ctxWithAuth(`Bearer ${token}`)),
     ).rejects.toThrow(UnauthorizedException);
   });
+
+  it('rejects a token whose email is not verified', async () => {
+    const token = await idp.sign(
+      { sub: 'oidc|1', email: 'a@b.eu' },
+      { emailUnverified: true },
+    );
+    await expect(
+      guard.canActivate(ctxWithAuth(`Bearer ${token}`)),
+    ).rejects.toThrow(UnauthorizedException);
+  });
 });

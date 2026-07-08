@@ -15,7 +15,15 @@ export type Db = NodePgDatabase<typeof schema>;
     {
       provide: PG_POOL,
       useFactory: (cfg: AppConfig) =>
-        new Pool({ connectionString: cfg.databaseUrl }),
+        new Pool({
+          connectionString: cfg.databaseUrl,
+          // Availability guardrails: cap runaway queries and abandoned open
+          // transactions so one tenant's slow/stuck query can't starve the
+          // shared pool. Generous idle bound because ingestion legitimately
+          // awaits an external embedding call inside its transaction.
+          statement_timeout: 30_000,
+          idle_in_transaction_session_timeout: 120_000,
+        }),
       inject: [APP_CONFIG],
     },
     {

@@ -10,7 +10,12 @@ export interface TestIdp {
   keyGetter: JWTVerifyGetKey;
   sign(
     claims: { sub: string; email: string; name?: string },
-    opts?: { issuer?: string; audience?: string; expired?: boolean },
+    opts?: {
+      issuer?: string;
+      audience?: string;
+      expired?: boolean;
+      emailUnverified?: boolean;
+    },
   ): Promise<string>;
 }
 
@@ -26,7 +31,11 @@ export async function makeTestIdp(): Promise<TestIdp> {
   return {
     keyGetter,
     async sign(claims, opts = {}) {
-      return new SignJWT({ email: claims.email, name: claims.name })
+      return new SignJWT({
+        email: claims.email,
+        name: claims.name,
+        email_verified: opts.emailUnverified ? false : true,
+      })
         .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
         .setSubject(claims.sub)
         .setIssuer(opts.issuer ?? TEST_ISSUER)

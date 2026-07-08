@@ -62,6 +62,12 @@ describe('MembershipGuard', () => {
     await expect(guard.canActivate(ctx({}, undefined))).resolves.toBe(true);
   });
 
+  it('fails closed when @RequireRole is set but no :tenantId param resolves', async () => {
+    await expect(guard.canActivate(ctx({}, 'admin'))).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+
   it('passes through a @Public() route with :tenantId and no req.user', async () => {
     const callsBefore = svc.find.mock.calls.length;
     const c = ctx({ tenantId: 't1' }, undefined, {

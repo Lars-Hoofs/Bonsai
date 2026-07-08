@@ -33,18 +33,28 @@ export class MembershipGuard implements CanActivate {
       membership?: { role: Role };
       tenant?: { id: string; schemaName: string };
     }>();
+    const requiredRole = this.reflector.getAllAndOverride<Role | undefined>(
+      REQUIRED_ROLE,
+      [ctx.getHandler(), ctx.getClass()],
+    );
     const tenantId = req.params.tenantId;
-    if (!tenantId) return true;
+    if (!tenantId) {
+      // Fail closed: a route that declares @RequireRole is tenant-scoped by
+      // definition, so a missing :tenantId param is a misconfiguration, not a
+      // free pass. Routes without @RequireRole (e.g. user-scoped /tenants) pass.
+      if (requiredRole !== undefined) {
+        throw new ForbiddenException(
+          'Tenant-scoped route is missing a tenantId parameter',
+        );
+      }
+      return true;
+    }
     const user = req.user;
     if (!user) throw new UnauthorizedException('Missing authenticated user');
     const membership = await this.membershipsService.find(tenantId, user.id);
     if (!membership)
       throw new ForbiddenException('Not a member of this tenant');
-    const required =
-      this.reflector.getAllAndOverride<Role | undefined>(REQUIRED_ROLE, [
-        ctx.getHandler(),
-        ctx.getClass(),
-      ]) ?? 'viewer';
+    const required = requiredRole ?? 'viewer';
     if (ROLE_RANK[membership.role] < ROLE_RANK[required]) {
       throw new ForbiddenException(`Requires role ${required}`);
     }
