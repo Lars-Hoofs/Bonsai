@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Pool } from 'pg';
 import { runControlPlaneMigrations } from './run-control-plane-migrations';
 
