@@ -15,6 +15,7 @@ describe('loadConfig', () => {
     expect(cfg.oidcIssuer).toBe('https://id.example.eu');
   });
   it('throws on missing DATABASE_URL', () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { DATABASE_URL, ...rest } = valid;
     expect(() => loadConfig(rest)).toThrow(/DATABASE_URL/);
   });

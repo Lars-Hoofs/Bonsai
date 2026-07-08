@@ -3,7 +3,9 @@ import { z } from 'zod';
 const schema = z.object({
   DATABASE_URL: z.string().min(1),
   PORT: z.coerce.number().int().positive().default(3000),
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  NODE_ENV: z
+    .enum(['development', 'test', 'production'])
+    .default('development'),
   OIDC_ISSUER: z.string().url(),
   OIDC_AUDIENCE: z.string().min(1),
   OIDC_JWKS_URL: z.string().url(),
@@ -23,7 +25,9 @@ export const APP_CONFIG = Symbol('APP_CONFIG');
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const r = schema.safeParse(env);
   if (!r.success) {
-    throw new Error(`Invalid configuration: ${r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+    throw new Error(
+      `Invalid configuration: ${r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
+    );
   }
   const d = r.data;
   return {

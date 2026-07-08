@@ -1,5 +1,5 @@
 allowBuilds:
-  cpu-features: set this to true or false
-  protobufjs: set this to true or false
-  ssh2: set this to true or false
-  unrs-resolver: set this to true or false
+  cpu-features: true
+  protobufjs: true
+  ssh2: true
+  unrs-resolver: false
