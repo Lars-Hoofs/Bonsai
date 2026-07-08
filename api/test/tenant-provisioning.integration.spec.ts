@@ -39,4 +39,21 @@ describe('TenantProvisioningService', () => {
       svc.createTenant({ name: 'Acme2', slug: 'acme' }),
     ).rejects.toThrow(/already exists/i);
   });
+
+  it('leaves no orphan schema behind after a rejected duplicate slug', async () => {
+    const countTenantSchemas = async (): Promise<number> => {
+      const r = await pool.query(
+        `SELECT count(*)::int AS count FROM information_schema.schemata WHERE schema_name LIKE 't\\_%'`,
+      );
+      return (r.rows[0] as { count: number }).count;
+    };
+
+    const before = await countTenantSchemas();
+    await expect(
+      svc.createTenant({ name: 'Acme3', slug: 'acme' }),
+    ).rejects.toThrow(/already exists/i);
+    const after = await countTenantSchemas();
+
+    expect(after).toBe(before);
+  });
 });

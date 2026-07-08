@@ -12,6 +12,15 @@ export interface CreatedTenant {
   schemaName: string;
 }
 
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: unknown }).code === '23505'
+  );
+}
+
 @Injectable()
 export class TenantProvisioningService {
   constructor(
@@ -31,16 +40,25 @@ export class TenantProvisioningService {
       throw new ConflictException(`Tenant slug '${input.slug}' already exists`);
 
     const schemaName = `t_${randomBytes(16).toString('hex')}`;
-    const [row] = await this.db
-      .insert(tenants)
-      .values({ name: input.name, slug: input.slug, schemaName })
-      .returning();
     await this.pool.query(`CREATE SCHEMA "${schemaName}"`);
-    await runMigrations(this.pool, {
-      dir: TENANT_DIR,
-      schema: schemaName,
-      track: `tenant:${schemaName}`,
-    });
-    return { id: row.id, slug: row.slug, schemaName: row.schemaName };
+    try {
+      await runMigrations(this.pool, {
+        dir: TENANT_DIR,
+        schema: schemaName,
+        track: `tenant:${schemaName}`,
+      });
+      const [row] = await this.db
+        .insert(tenants)
+        .values({ name: input.name, slug: input.slug, schemaName })
+        .returning();
+      return { id: row.id, slug: row.slug, schemaName: row.schemaName };
+    } catch (err) {
+      await this.pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+      if (isUniqueViolation(err))
+        throw new ConflictException(
+          `Tenant slug '${input.slug}' already exists`,
+        );
+      throw err;
+    }
   }
 }
