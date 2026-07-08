@@ -5,7 +5,9 @@ services:
       POSTGRES_USER: bonsai
       POSTGRES_PASSWORD: bonsai_dev
       POSTGRES_DB: bonsai
-    ports: ["5432:5432"]
+    # Host port 5433 (container stays 5432) to avoid the common 5432 conflict
+    # with other local Postgres instances.
+    ports: ["5439:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
   redis:
     image: redis:7-alpine
