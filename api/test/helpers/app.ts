@@ -37,7 +37,13 @@ export async function buildTestApp(
     .compile();
   const app = mod.createNestApplication();
   app.use(requestIdMiddleware);
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
   app.useGlobalFilters(new HttpExceptionFilter());
   app.setGlobalPrefix('v1', { exclude: ['health', 'docs'] });
   await app.init();

@@ -9,7 +9,13 @@ import { requestIdMiddleware } from './common/request-id.middleware';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
   app.use(requestIdMiddleware);
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
   app.useGlobalFilters(new HttpExceptionFilter());
   app.setGlobalPrefix('v1', { exclude: ['health', 'docs'] });
   app.enableShutdownHooks();
