@@ -1,0 +1,3 @@
+chat.bonsaimedia.nl {
+    reverse_proxy api:3000
+}

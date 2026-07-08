@@ -7,6 +7,8 @@ import { PG_POOL } from '../../src/db/db.module';
 import { JWT_KEY_GETTER } from '../../src/auth/oidc.verifier';
 import { CONTROLPLANE_DIR, runMigrations } from '../../src/db/migrator';
 import { makeTestIdp, TEST_AUDIENCE, TEST_ISSUER, TestIdp } from './oidc';
+import { HttpExceptionFilter } from '../../src/common/http-exception.filter';
+import { requestIdMiddleware } from '../../src/common/request-id.middleware';
 
 export async function buildTestApp(
   pool: Pool,
@@ -34,8 +36,10 @@ export async function buildTestApp(
     .useValue(idp.keyGetter)
     .compile();
   const app = mod.createNestApplication();
+  app.use(requestIdMiddleware);
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  app.setGlobalPrefix('v1', { exclude: ['health'] });
+  app.useGlobalFilters(new HttpExceptionFilter());
+  app.setGlobalPrefix('v1', { exclude: ['health', 'docs'] });
   await app.init();
   return { app, idp };
 }

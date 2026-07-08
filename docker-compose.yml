@@ -10,5 +10,21 @@ services:
   redis:
     image: redis:7-alpine
     ports: ["6379:6379"]
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgres://bonsai:bonsai_dev@postgres:5432/bonsai
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+    depends_on: [postgres, redis]
+  caddy:
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api]
 volumes:
   pgdata:
+  caddy_data:
