@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
+import { APP_CONFIG } from '../config/config';
+import type { AppConfig } from '../config/config';
 import { RetrievalService } from './retrieval.service';
 import { LLM_PROVIDER } from './llm-provider';
 import type { LlmMessage, LlmProvider } from './llm-provider';
@@ -33,6 +35,7 @@ export class AnswerService {
     private readonly tenantDb: TenantDbService,
     private readonly retrieval: RetrievalService,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
+    @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
   async answer(
@@ -86,6 +89,19 @@ export class AnswerService {
       };
     }
 
+    // Second-pass groundedness self-check: an independent model call decides
+    // whether the drafted answer is fully supported by the sources. If not, we
+    // refuse rather than risk a plausible-but-unsupported answer.
+    if (this.cfg.selfCheckEnabled && !(await this.selfCheck(raw, chunks))) {
+      return {
+        answer: REFUSAL_NL,
+        confidence,
+        refused: true,
+        citations: [],
+        escalationSuggested: true,
+      };
+    }
+
     return {
       answer: raw.trim(),
       confidence,
@@ -93,6 +109,29 @@ export class AnswerService {
       citations: cited,
       escalationSuggested: false,
     };
+  }
+
+  /** Returns true if an independent model call judges the answer fully grounded. */
+  private async selfCheck(
+    answer: string,
+    chunks: { text: string; documentTitle: string }[],
+  ): Promise<boolean> {
+    const sources = chunks
+      .map((c, i) => `[${i + 1}] ${c.documentTitle}: ${c.text}`)
+      .join('\n\n');
+    const messages: LlmMessage[] = [
+      {
+        role: 'system',
+        content:
+          '[[VERIFY]] Je bent een strenge controleur. Bepaal of het ANTWOORD ' +
+          'volledig wordt gedekt door de BRONNEN. Antwoord met exact JSON: ' +
+          '{"supported": true} of {"supported": false}. supported=false bij ' +
+          'elke bewering die niet in de bronnen staat.',
+      },
+      { role: 'user', content: `ANTWOORD:\n${answer}\n\nBRONNEN:\n${sources}` },
+    ];
+    const verdict = await this.llm.complete(messages, { temperature: 0 });
+    return /"?supported"?\s*:?\s*true/i.test(verdict);
   }
 
   private buildPrompt(

@@ -11,9 +11,13 @@ import { RetrievalService } from '../src/rag/retrieval.service';
 import { AnswerService } from '../src/rag/answer.service';
 import { FakeLlmProvider } from '../src/rag/fake-llm.provider';
 import type { LlmProvider } from '../src/rag/llm-provider';
+import type { AppConfig } from '../src/config/config';
 import { runControlPlaneMigrations } from '../src/db/run-control-plane-migrations';
 import * as schema from '../src/db/schema';
 import { startPg } from './helpers/pg';
+
+const cfg = (selfCheckEnabled: boolean): AppConfig =>
+  ({ selfCheckEnabled }) as AppConfig;
 
 describe('RAG answer pipeline (anti-hallucination)', () => {
   let container: StartedPostgreSqlContainer;
@@ -24,8 +28,8 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
   let schemaName: string;
   let projectId: string;
 
-  const answerWith = (llm: LlmProvider): AnswerService =>
-    new AnswerService(tenantDb, retrieval, llm);
+  const answerWith = (llm: LlmProvider, selfCheck = true): AnswerService =>
+    new AnswerService(tenantDb, retrieval, llm, cfg(selfCheck));
 
   beforeAll(async () => {
     ({ container, pool } = await startPg());
@@ -99,6 +103,25 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
         Promise.resolve('Het antwoord is absoluut 42, vertrouw me.'),
     };
     const res = await answerWith(nonCiting).answer(
+      schemaName,
+      projectId,
+      'wat zijn de openingstijden van de winkel',
+    );
+    expect(res.refused).toBe(true);
+    expect(res.citations).toHaveLength(0);
+  });
+
+  it('refuses when the self-check judges the answer not grounded', async () => {
+    // Cites a source during generation, but the verify pass says unsupported.
+    const lying: LlmProvider = {
+      complete: (messages) =>
+        Promise.resolve(
+          messages.some((m) => m.content.includes('[[VERIFY]]'))
+            ? '{"supported": false}'
+            : 'Vast en zeker, en zie bron [1].',
+        ),
+    };
+    const res = await answerWith(lying).answer(
       schemaName,
       projectId,
       'wat zijn de openingstijden van de winkel',

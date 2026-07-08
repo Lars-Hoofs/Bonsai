@@ -24,6 +24,7 @@ export async function buildTestApp(
     oidcJwksUrl: 'https://unused.example/keys',
     embeddingDim: 1024,
     rateLimitPerMinute: 120,
+    selfCheckEnabled: true,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(APP_CONFIG)

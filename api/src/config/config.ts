@@ -20,6 +20,12 @@ const schema = z.object({
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string().optional(),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(120),
+  // Second-pass groundedness self-check (extra small LLM call). On by default;
+  // can be disabled to trade a bit of safety for lower cost/latency.
+  SELF_CHECK_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 export interface AppConfig {
@@ -37,6 +43,7 @@ export interface AppConfig {
   llmApiKey?: string;
   llmModel?: string;
   rateLimitPerMinute: number;
+  selfCheckEnabled: boolean;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -64,5 +71,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     llmApiKey: d.LLM_API_KEY,
     llmModel: d.LLM_MODEL,
     rateLimitPerMinute: d.RATE_LIMIT_PER_MINUTE,
+    selfCheckEnabled: d.SELF_CHECK_ENABLED,
   };
 }

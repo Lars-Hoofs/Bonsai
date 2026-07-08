@@ -8,6 +8,11 @@ import { LlmMessage, LlmProvider } from './llm-provider';
  */
 export class FakeLlmProvider implements LlmProvider {
   complete(messages: LlmMessage[]): Promise<string> {
+    // Groundedness self-check calls carry the [[VERIFY]] marker; the fake
+    // considers grounded answers supported.
+    if (messages.some((m) => m.content.includes('[[VERIFY]]'))) {
+      return Promise.resolve('{"supported": true}');
+    }
     const user = [...messages].reverse().find((m) => m.role === 'user');
     const hasSources = /\[1\]/.test(user?.content ?? '');
     if (!hasSources) {
