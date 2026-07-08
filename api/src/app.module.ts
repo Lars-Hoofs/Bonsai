@@ -16,6 +16,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { UsageModule } from './usage/usage.module';
 import { CrawlModule } from './crawl/crawl.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { CrawlModule } from './crawl/crawl.module';
     WebhooksModule,
     UsageModule,
     CrawlModule,
+    StorageModule,
   ],
   controllers: [HealthController],
 })

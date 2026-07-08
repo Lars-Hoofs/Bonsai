@@ -29,6 +29,13 @@ const schema = z.object({
   // disabled (on-demand reprocess still works).
   REDIS_URL: z.string().url().optional(),
   RECRAWL_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
+  // Object storage (MinIO / S3-compatible) for raw uploads. Optional: when
+  // unset, uploads still work (text is extracted) but the raw file isn't kept.
+  S3_ENDPOINT: z.string().url().optional(),
+  S3_REGION: z.string().default('us-east-1'),
+  S3_ACCESS_KEY: z.string().optional(),
+  S3_SECRET_KEY: z.string().optional(),
+  S3_BUCKET: z.string().optional(),
   // Second-pass groundedness self-check (extra small LLM call). On by default;
   // can be disabled to trade a bit of safety for lower cost/latency.
   SELF_CHECK_ENABLED: z
@@ -57,6 +64,11 @@ export interface AppConfig {
   rateLimitPerMinute: number;
   redisUrl?: string;
   recrawlIntervalMs: number;
+  s3Endpoint?: string;
+  s3Region: string;
+  s3AccessKey?: string;
+  s3SecretKey?: string;
+  s3Bucket?: string;
   selfCheckEnabled: boolean;
 }
 
@@ -90,6 +102,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     rateLimitPerMinute: d.RATE_LIMIT_PER_MINUTE,
     redisUrl: d.REDIS_URL,
     recrawlIntervalMs: d.RECRAWL_INTERVAL_MS,
+    s3Endpoint: d.S3_ENDPOINT,
+    s3Region: d.S3_REGION,
+    s3AccessKey: d.S3_ACCESS_KEY,
+    s3SecretKey: d.S3_SECRET_KEY,
+    s3Bucket: d.S3_BUCKET,
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
   };
 }

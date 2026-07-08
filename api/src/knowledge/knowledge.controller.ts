@@ -11,10 +11,12 @@ import {
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser, Tenant } from '../auth/auth.types';
 import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
+import { StorageService } from '../storage/storage.service';
 import { CreateSourceDto } from './dto';
 import { extractUploadText } from './ingestion/extract-text';
 import { KnowledgeSourcesService } from './knowledge-sources.service';
@@ -27,7 +29,10 @@ interface UploadedFileLike {
 
 @Controller('tenants/:tenantId/projects/:projectId/knowledge')
 export class KnowledgeController {
-  constructor(private readonly knowledge: KnowledgeSourcesService) {}
+  constructor(
+    private readonly knowledge: KnowledgeSourcesService,
+    private readonly storage: StorageService,
+  ) {}
 
   @Post('sources')
   @RequireRole('editor')
@@ -55,13 +60,20 @@ export class KnowledgeController {
       file.mimetype,
       file.buffer,
     );
+    // Retain the raw file in object storage when configured (for re-processing,
+    // download and audit); text extraction/indexing works regardless.
+    let storageKey: string | undefined;
+    if (this.storage.enabled) {
+      storageKey = `${tenant.schemaName}/uploads/${randomUUID()}-${file.originalname}`;
+      await this.storage.put(storageKey, file.buffer, file.mimetype);
+    }
     return this.knowledge.create(
       tenant,
       projectId,
       {
         type: 'upload',
         name: file.originalname,
-        config: { title: file.originalname, body: text },
+        config: { title: file.originalname, body: text, storageKey },
       },
       user.id,
     );

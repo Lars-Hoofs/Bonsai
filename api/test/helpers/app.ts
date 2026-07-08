@@ -25,6 +25,7 @@ export async function buildTestApp(
     embeddingDim: 1024,
     rateLimitPerMinute: 120,
     recrawlIntervalMs: 86_400_000,
+    s3Region: 'us-east-1',
     selfCheckEnabled: true,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
