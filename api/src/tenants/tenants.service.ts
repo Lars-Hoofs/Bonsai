@@ -1,7 +1,13 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { AuditService } from '../audit/audit.service';
 import { MembershipsService } from '../auth/memberships.service';
+import { ROLE_RANK } from '../auth/roles.decorator';
 import { DB } from '../db/db.module';
 import type { Db } from '../db/db.module';
 import { memberships, tenants, users } from '../db/schema';
@@ -54,6 +60,14 @@ export class TenantsService {
     role: Role,
     actorUserId: string,
   ): Promise<void> {
+    // Privilege-escalation guard (defence-in-depth beyond the DTO): an actor
+    // may never grant a role higher than their own. MembershipGuard has
+    // already confirmed the actor is at least admin for this tenant.
+    const actor = await this.membershipsService.find(tenantId, actorUserId);
+    if (!actor || ROLE_RANK[role] > ROLE_RANK[actor.role])
+      throw new ForbiddenException(
+        'Cannot grant a role higher than your own',
+      );
     const [user] = await this.db
       .select()
       .from(users)

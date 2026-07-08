@@ -66,4 +66,30 @@ describe('tenant isolation', () => {
       ),
     ).rejects.toThrow('Invalid tenant schema');
   });
+
+  it('cannot reach control-plane tables from a tenant-scoped connection (isolation by construction)', async () => {
+    // `public` is excluded from the runtime search_path, so unqualified
+    // references to control-plane tables must fail to resolve rather than
+    // leak platform-wide data (all tenants' users, api key hashes, etc.).
+    for (const table of ['tenants', 'users', 'api_keys', 'audit_log']) {
+      // Drizzle wraps the pg error; the "relation does not exist" text is on
+      // the cause. Assert on the full chain, and fail loudly if it resolves.
+      let chain: string | undefined;
+      try {
+        await tenantDb.withTenant(a.schemaName, (db) =>
+          db.execute(sql.raw(`SELECT * FROM ${table}`)),
+        );
+      } catch (err) {
+        const e = err as { message?: string; cause?: { message?: string } };
+        chain = `${e.message ?? ''} ${e.cause?.message ?? ''}`;
+      }
+      expect(chain).toBeDefined();
+      expect(chain).toMatch(/does not exist/i);
+    }
+    // The tenant's own tables remain reachable unqualified.
+    const own = await tenantDb.withTenant(a.schemaName, (db) =>
+      db.execute(sql`SELECT count(*)::int AS c FROM projects`),
+    );
+    expect((own.rows[0] as { c: number }).c).toBeGreaterThanOrEqual(0);
+  });
 });

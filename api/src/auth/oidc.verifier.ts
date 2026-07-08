@@ -24,6 +24,10 @@ export class OidcVerifier {
       const { payload } = await jwtVerify(token, this.keyGetter, {
         issuer: this.cfg.oidcIssuer,
         audience: this.cfg.oidcAudience,
+        // Defence-in-depth: pin the signing algorithm so a JWKS that ever
+        // publishes a key usable with a weaker/attacker-favourable alg cannot
+        // be exploited (algorithm-confusion). Most OIDC IdPs sign with RS256.
+        algorithms: ['RS256'],
       });
       if (
         typeof payload.sub !== 'string' ||
