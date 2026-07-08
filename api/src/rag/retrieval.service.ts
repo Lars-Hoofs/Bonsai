@@ -12,6 +12,8 @@ export interface RetrievedChunk {
   originUrl: string | null;
   text: string;
   score: number;
+  /** Raw cosine similarity (0..1) of this chunk to the query. Drives confidence. */
+  similarity: number;
 }
 
 export interface RetrieveOptions {
@@ -77,6 +79,7 @@ export class RetrievalService {
         )
         SELECT c.id AS chunk_id, c.document_id, c.text,
                d.title AS document_title, d.source_id, d.origin_url,
+               1.0 - (c.embedding <=> (SELECT v FROM q)) AS similarity,
                COALESCE(1.0 / (${k} + vec.rnk), 0)
              + COALESCE(1.0 / (${k} + fts.rnk), 0) AS score
         FROM chunks c
@@ -99,6 +102,7 @@ export class RetrievalService {
       originUrl: (row.origin_url as string | null) ?? null,
       text: row.text as string,
       score: Number(row.score),
+      similarity: Number(row.similarity),
     }));
   }
 }

@@ -15,6 +15,10 @@ const schema = z.object({
   EMBEDDING_API_KEY: z.string().optional(),
   EMBEDDING_MODEL: z.string().optional(),
   EMBEDDING_DIM: z.coerce.number().int().positive().default(1024),
+  // Answer LLM, also an external API. Optional so tests/dev use the fake.
+  LLM_API_URL: z.string().url().optional(),
+  LLM_API_KEY: z.string().optional(),
+  LLM_MODEL: z.string().optional(),
 });
 
 export interface AppConfig {
@@ -28,6 +32,9 @@ export interface AppConfig {
   embeddingApiKey?: string;
   embeddingModel?: string;
   embeddingDim: number;
+  llmApiUrl?: string;
+  llmApiKey?: string;
+  llmModel?: string;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -51,5 +58,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     embeddingApiKey: d.EMBEDDING_API_KEY,
     embeddingModel: d.EMBEDDING_MODEL,
     embeddingDim: d.EMBEDDING_DIM,
+    llmApiUrl: d.LLM_API_URL,
+    llmApiKey: d.LLM_API_KEY,
+    llmModel: d.LLM_MODEL,
   };
 }
