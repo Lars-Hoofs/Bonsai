@@ -25,6 +25,10 @@ const schema = z.object({
   RERANK_API_KEY: z.string().optional(),
   RERANK_MODEL: z.string().optional(),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(120),
+  // Redis for the re-crawl queue/scheduler. When unset, scheduled re-crawl is
+  // disabled (on-demand reprocess still works).
+  REDIS_URL: z.string().url().optional(),
+  RECRAWL_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
   // Second-pass groundedness self-check (extra small LLM call). On by default;
   // can be disabled to trade a bit of safety for lower cost/latency.
   SELF_CHECK_ENABLED: z
@@ -51,6 +55,8 @@ export interface AppConfig {
   rerankApiKey?: string;
   rerankModel?: string;
   rateLimitPerMinute: number;
+  redisUrl?: string;
+  recrawlIntervalMs: number;
   selfCheckEnabled: boolean;
 }
 
@@ -82,6 +88,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     rerankApiKey: d.RERANK_API_KEY,
     rerankModel: d.RERANK_MODEL,
     rateLimitPerMinute: d.RATE_LIMIT_PER_MINUTE,
+    redisUrl: d.REDIS_URL,
+    recrawlIntervalMs: d.RECRAWL_INTERVAL_MS,
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
   };
 }

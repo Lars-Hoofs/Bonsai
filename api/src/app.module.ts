@@ -15,6 +15,7 @@ import { WidgetModule } from './widget/widget.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { UsageModule } from './usage/usage.module';
+import { CrawlModule } from './crawl/crawl.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { UsageModule } from './usage/usage.module';
     AnalyticsModule,
     WebhooksModule,
     UsageModule,
+    CrawlModule,
   ],
   controllers: [HealthController],
 })
