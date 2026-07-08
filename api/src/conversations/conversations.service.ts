@@ -92,12 +92,13 @@ export class ConversationsService {
       return { status: convo.status };
     }
 
-    // Cost cap: an over-quota tenant cannot keep driving paid AI answers.
-    await this.usage.enforceAnswerQuota(tenantId);
+    // Cost cap: reserve capacity atomically before the LLM round-trip so an
+    // over-quota tenant cannot keep driving paid AI answers, and concurrent
+    // requests can't all slip through on a stale read (TOCTOU).
+    await this.usage.reserveAnswer(tenantId);
     const started = Date.now();
     const answer = await this.answers.answer(schemaName, projectId, text);
     const latency = Date.now() - started;
-    await this.usage.recordAnswer(tenantId);
 
     await this.tenantDb.withTenant(schemaName, async (db) => {
       const m = await db.execute(

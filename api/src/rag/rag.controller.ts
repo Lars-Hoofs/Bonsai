@@ -30,13 +30,12 @@ export class RagController {
     @Param('projectId', ParseUUIDPipe) projectId: string,
     @Body() dto: AnswerQuestionDto,
   ): Promise<AnswerResult> {
-    await this.usage.enforceAnswerQuota(tenant.id);
+    await this.usage.reserveAnswer(tenant.id);
     const result = await this.answerService.answer(
       tenant.schemaName,
       projectId,
       dto.question,
     );
-    await this.usage.recordAnswer(tenant.id);
     return result;
   }
 }
