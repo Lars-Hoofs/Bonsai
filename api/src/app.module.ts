@@ -5,9 +5,17 @@ import { TenancyModule } from './tenancy/tenancy.module';
 import { AuthModule } from './auth/auth.module';
 import { AuditModule } from './audit/audit.module';
 import { TenantsModule } from './tenants/tenants.module';
+import { ProjectsModule } from './projects/projects.module';
 
 @Module({
-  imports: [DbModule, TenancyModule, AuthModule, AuditModule, TenantsModule],
+  imports: [
+    DbModule,
+    TenancyModule,
+    AuthModule,
+    AuditModule,
+    TenantsModule,
+    ProjectsModule,
+  ],
   controllers: [HealthController],
 })
 export class AppModule {}

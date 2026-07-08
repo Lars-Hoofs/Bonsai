@@ -11,3 +11,14 @@ export const CurrentUser = createParamDecorator(
     return ctx.switchToHttp().getRequest<{ user: AuthUser }>().user;
   },
 );
+
+export interface TenantRef {
+  id: string;
+  schemaName: string;
+}
+
+export const Tenant = createParamDecorator(
+  (_: unknown, ctx: ExecutionContext): TenantRef => {
+    return ctx.switchToHttp().getRequest<{ tenant: TenantRef }>().tenant;
+  },
+);
