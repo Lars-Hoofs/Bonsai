@@ -131,6 +131,12 @@ describe('knowledge base e2e', () => {
       .expect(201);
     const sourceId = (create.body as SourceBody).id;
 
+    const before = await request(app.getHttpServer())
+      .get(`${base()}/documents?sourceId=${sourceId}`)
+      .set(auth())
+      .expect(200);
+    const beforeId = (before.body as DocListItem[])[0].id;
+
     await request(app.getHttpServer())
       .post(`${base()}/sources/${sourceId}/reprocess`)
       .set(auth())
@@ -139,7 +145,11 @@ describe('knowledge base e2e', () => {
       .get(`${base()}/documents?sourceId=${sourceId}`)
       .set(auth())
       .expect(200);
-    expect(afterReprocess.body as DocListItem[]).toHaveLength(1);
+    const afterList = afterReprocess.body as DocListItem[];
+    expect(afterList).toHaveLength(1);
+    // Change detection: unchanged content is not re-inserted, so the document
+    // row (and its id) is preserved rather than deleted + recreated.
+    expect(afterList[0].id).toBe(beforeId);
 
     await request(app.getHttpServer())
       .delete(`${base()}/sources/${sourceId}`)

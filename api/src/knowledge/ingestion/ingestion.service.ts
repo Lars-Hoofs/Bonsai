@@ -20,6 +20,10 @@ function toVectorLiteral(vec: number[]): string {
   return `[${vec.join(',')}]`;
 }
 
+function docHash(raw: { title: string; body: string }): string {
+  return createHash('sha256').update(`${raw.title}\n${raw.body}`).digest('hex');
+}
+
 @Injectable()
 export class IngestionService {
   private readonly logger = new Logger(IngestionService.name);
@@ -43,7 +47,30 @@ export class IngestionService {
           sql`UPDATE knowledge_sources SET status='processing', error_detail=NULL, updated_at=now() WHERE id=${sourceId}`,
         );
         const raws = await this.extract(src.type, src.config);
-        // Replace prior documents for a clean reprocess.
+
+        // Change detection: if the extracted content hashes to exactly the same
+        // set as what is already stored, nothing changed — skip the (expensive)
+        // re-embedding entirely and just refresh last_synced_at.
+        const newHashes = raws.map(docHash).sort();
+        const existing = await db.execute(
+          sql`SELECT content_hash FROM documents WHERE source_id=${sourceId}`,
+        );
+        const oldHashes = (existing.rows as { content_hash: string }[])
+          .map((r) => r.content_hash)
+          .sort();
+        const unchanged =
+          newHashes.length > 0 &&
+          newHashes.length === oldHashes.length &&
+          newHashes.every((h, i) => h === oldHashes[i]);
+
+        if (unchanged) {
+          await db.execute(
+            sql`UPDATE knowledge_sources SET status='processed', last_synced_at=now(), updated_at=now() WHERE id=${sourceId}`,
+          );
+          return;
+        }
+
+        // Content changed — replace prior documents and re-embed.
         await db.execute(
           sql`DELETE FROM documents WHERE source_id=${sourceId}`,
         );
@@ -133,9 +160,7 @@ export class IngestionService {
     raw: RawDocument,
   ): Promise<void> {
     const language = raw.language ?? 'nl';
-    const contentHash = createHash('sha256')
-      .update(`${raw.title}\n${raw.body}`)
-      .digest('hex');
+    const contentHash = docHash(raw);
 
     const inserted = await db.execute(
       sql`INSERT INTO documents (source_id, project_id, title, origin_url, content_hash, language, status)
