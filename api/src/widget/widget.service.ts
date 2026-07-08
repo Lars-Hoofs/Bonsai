@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { DEFAULT_WIDGET_THEME } from './default-theme';
+import { assertThemeShape } from './theme-validation';
 
 export interface WidgetConfigView {
   projectId: string;
@@ -36,6 +37,7 @@ export class WidgetService {
     projectId: string,
     draft: Record<string, unknown>,
   ): Promise<WidgetConfigView> {
+    assertThemeShape(draft);
     await this.get(schemaName, projectId); // ensure row exists
     const row = await this.tenantDb.withTenant(schemaName, async (db) => {
       const r = await db.execute(
@@ -52,7 +54,12 @@ export class WidgetService {
     schemaName: string,
     projectId: string,
   ): Promise<WidgetConfigView> {
-    await this.get(schemaName, projectId);
+    const current = await this.get(schemaName, projectId);
+    // Defense in depth: re-validate the stored draft's shape before copying
+    // it to published, in case it was persisted before this guard existed
+    // (or written directly to the DB) — publish must never promote an
+    // oversized/malformed blob to the live, publicly-served theme.
+    assertThemeShape(current.draft);
     const row = await this.tenantDb.withTenant(schemaName, async (db) => {
       const r = await db.execute(
         sql`UPDATE widget_configs

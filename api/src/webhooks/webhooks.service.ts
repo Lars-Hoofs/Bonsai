@@ -27,15 +27,18 @@ export class WebhooksService {
     input: { url: string; events: string[] },
   ): Promise<{ id: string; secret: string }> {
     const secret = `whsec_${randomBytes(24).toString('base64url')}`;
-    // Build an explicit Postgres array literal to avoid driver/ORM ambiguity
-    // over how a JS array binds to a text[] column.
-    const eventsLiteral = `{${input.events
-      .map((e) => `"${e.replace(/(["\\])/g, '\\$1')}"`)
-      .join(',')}}`;
     const id = await this.tenantDb.withTenant(schemaName, async (db) => {
+      // Bind the JS string array as a single parameter via `sql.param` (cast
+      // to text[]) rather than hand-building a Postgres array-literal string.
+      // A bare `${input.events}` interpolation would instead splice the
+      // array as N separate comma-joined placeholders (drizzle's `IN (...)`
+      // convenience behavior) — wrong shape for a single text[] column and
+      // NOT what we want here. `sql.param` forces it to bind as one value,
+      // which node-postgres then serializes as a proper array literal
+      // itself, with no manual escaping needed or wanted.
       const r = await db.execute(
         sql`INSERT INTO webhooks (project_id, url, events, secret)
-            VALUES (${projectId}, ${input.url}, ${eventsLiteral}::text[], ${secret})
+            VALUES (${projectId}, ${input.url}, ${sql.param(input.events)}::text[], ${secret})
             RETURNING id`,
       );
       return (r.rows[0] as { id: string }).id;

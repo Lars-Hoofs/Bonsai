@@ -57,8 +57,20 @@ export class ConversationsService {
     private readonly events: EventEmitter2,
   ) {}
 
-  private emit(conversationId: string, role: string, content: string): void {
-    this.events.emit(CHAT_MESSAGE_EVENT, { conversationId, role, content });
+  private emit(
+    tenantId: string,
+    projectId: string,
+    conversationId: string,
+    role: string,
+    content: string,
+  ): void {
+    this.events.emit(CHAT_MESSAGE_EVENT, {
+      tenantId,
+      projectId,
+      conversationId,
+      role,
+      content,
+    });
   }
 
   async start(
@@ -111,7 +123,7 @@ export class ConversationsService {
       role: 'visitor',
       content: text,
     });
-    this.emit(conversationId, 'visitor', text);
+    this.emit(tenantId, projectId, conversationId, 'visitor', text);
 
     if (convo.status !== 'bot') {
       return { status: convo.status };
@@ -142,7 +154,7 @@ export class ConversationsService {
         sql`UPDATE conversations SET updated_at=now() WHERE id=${conversationId}`,
       );
     });
-    this.emit(conversationId, 'bot', answer.answer);
+    this.emit(tenantId, projectId, conversationId, 'bot', answer.answer);
 
     return {
       status: 'bot',
@@ -160,6 +172,7 @@ export class ConversationsService {
   }
 
   async escalate(
+    tenantId: string,
     schemaName: string,
     projectId: string,
     conversationId: string,
@@ -186,6 +199,8 @@ export class ConversationsService {
       );
     });
     this.emit(
+      tenantId,
+      projectId,
       conversationId,
       'system',
       'Gesprek doorgezet naar een medewerker.',
@@ -270,6 +285,7 @@ export class ConversationsService {
   }
 
   async agentMessage(
+    tenantId: string,
     schemaName: string,
     projectId: string,
     conversationId: string,
@@ -297,7 +313,7 @@ export class ConversationsService {
         sql`UPDATE conversations SET updated_at=now() WHERE id=${conversationId}`,
       );
     });
-    this.emit(conversationId, 'agent', text);
+    this.emit(tenantId, projectId, conversationId, 'agent', text);
   }
 
   async returnToBot(

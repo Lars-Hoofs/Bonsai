@@ -59,6 +59,7 @@ export class ConversationsController {
     @CurrentUser() user: AuthUser,
   ): Promise<{ ok: true }> {
     await this.conversations.agentMessage(
+      tenant.id,
       tenant.schemaName,
       projectId,
       conversationId,

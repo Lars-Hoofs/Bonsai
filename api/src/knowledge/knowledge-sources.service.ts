@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { AuditService } from '../audit/audit.service';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { IngestionService } from './ingestion/ingestion.service';
+import { validateSourceConfig } from './source-config-validation';
 
 export interface SourceRow {
   id: string;
@@ -52,6 +53,7 @@ export class KnowledgeSourcesService {
     input: { type: string; name: string; config: Record<string, unknown> },
     actorUserId: string,
   ): Promise<SourceRow> {
+    validateSourceConfig(input.type, input.config);
     const id = await this.tenantDb.withTenant(tenant.schemaName, async (db) => {
       const r = await db.execute(
         sql`INSERT INTO knowledge_sources (project_id, type, name, config, status)

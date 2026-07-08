@@ -14,6 +14,8 @@ import { TenantDbService } from '../tenancy/tenant-db.service';
 
 export interface ChatMessageEvent {
   conversationId: string;
+  tenantId: string;
+  projectId: string;
   role: string;
   content: string;
 }
@@ -43,6 +45,22 @@ const WIDGET_CORS_ORIGINS = (process.env.WIDGET_CORS_ORIGINS ?? '')
   .filter((s) => s.length > 0);
 
 /**
+ * Derives the Socket.IO room key for a conversation. Includes `tenantId` and
+ * `projectId` (not just `conversationId`) so that room membership is scoped
+ * per-tenant/per-project at the key level, not merely by convention — even
+ * if a listener were added elsewhere that broadcasts using only a raw
+ * conversationId, it could not accidentally collide with this room's key,
+ * and any future cross-tenant conversationId reuse could not cross-deliver.
+ */
+function conversationRoom(
+  tenantId: string,
+  projectId: string,
+  conversationId: string,
+): string {
+  return `conv:${tenantId}:${projectId}:${conversationId}`;
+}
+
+/**
  * Real-time delivery for live handover / streaming chat. Clients connect to
  * the `/chat` namespace and `join` a conversation room; every persisted
  * message (visitor, bot, agent, system) is broadcast to that room.
@@ -55,6 +73,13 @@ const WIDGET_CORS_ORIGINS = (process.env.WIDGET_CORS_ORIGINS ?? '')
  * the supplied `visitorSecret` for that conversation, and ONLY THEN joins
  * the room. Any failure returns `{ error }` (a WS ack, not an HTTP
  * response/thrown exception) and never joins the socket to the room.
+ *
+ * The room key itself is derived from `tenantId` + `projectId` +
+ * `conversationId` (see `conversationRoom`), and `broadcast` only forwards
+ * `ChatMessageEvent`s that carry a `tenantId`/`projectId` — this keeps the
+ * event payload tenant/project-scoped end to end, so a future additional
+ * `@OnEvent(CHAT_MESSAGE_EVENT)` listener can filter by tenant without
+ * needing to re-derive it from the conversation row.
  */
 @WebSocketGateway({ namespace: 'chat', cors: { origin: WIDGET_CORS_ORIGINS } })
 export class ChatGateway {
@@ -87,7 +112,13 @@ export class ChatGateway {
     if (!owned) {
       return { error: 'unauthorized' };
     }
-    await client.join(`conv:${data.conversationId}`);
+    await client.join(
+      conversationRoom(
+        resolved.tenantId,
+        resolved.projectId,
+        data.conversationId,
+      ),
+    );
     return { ok: true };
   }
 
@@ -109,7 +140,16 @@ export class ChatGateway {
 
   @OnEvent(CHAT_MESSAGE_EVENT)
   broadcast(event: ChatMessageEvent): void {
-    this.server?.to(`conv:${event.conversationId}`).emit('message', event);
+    // Defense in depth: never forward a message event that isn't fully
+    // tenant/project-scoped, even though the emitter always sets these today.
+    if (!event.tenantId || !event.projectId || !event.conversationId) {
+      return;
+    }
+    this.server
+      ?.to(
+        conversationRoom(event.tenantId, event.projectId, event.conversationId),
+      )
+      .emit('message', event);
   }
 }
 

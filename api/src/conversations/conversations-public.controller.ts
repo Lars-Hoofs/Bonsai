@@ -91,11 +91,12 @@ export class ConversationsPublicController {
     @Body() dto: EscalateDto,
     @Headers('x-bonsai-visitor-secret') visitorSecret: string | undefined,
   ): Promise<{ ok: true }> {
-    const { schemaName, projectId } = requireWidgetKey(req);
+    const { tenantId, schemaName, projectId } = requireWidgetKey(req);
     if (!visitorSecret) {
       throw new UnauthorizedException('Missing visitor secret');
     }
     await this.conversations.escalate(
+      tenantId,
       schemaName,
       projectId,
       conversationId,
