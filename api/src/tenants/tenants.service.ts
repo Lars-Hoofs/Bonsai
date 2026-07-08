@@ -65,9 +65,7 @@ export class TenantsService {
     // already confirmed the actor is at least admin for this tenant.
     const actor = await this.membershipsService.find(tenantId, actorUserId);
     if (!actor || ROLE_RANK[role] > ROLE_RANK[actor.role])
-      throw new ForbiddenException(
-        'Cannot grant a role higher than your own',
-      );
+      throw new ForbiddenException('Cannot grant a role higher than your own');
     const [user] = await this.db
       .select()
       .from(users)
