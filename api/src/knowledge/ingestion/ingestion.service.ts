@@ -7,6 +7,7 @@ import { ChunkingService } from '../chunking/chunking.service';
 import { EMBEDDING_PROVIDER } from '../embedding/embedding-provider';
 import type { EmbeddingProvider } from '../embedding/embedding-provider';
 import { csvToDocuments, RawDocument } from './csv';
+import { extractTitle, htmlToText } from './extract-text';
 
 /** Maps a document language to a Postgres text-search configuration. */
 function regconfig(language: string): string {
@@ -41,7 +42,7 @@ export class IngestionService {
         await db.execute(
           sql`UPDATE knowledge_sources SET status='processing', error_detail=NULL, updated_at=now() WHERE id=${sourceId}`,
         );
-        const raws = this.extract(src.type, src.config);
+        const raws = await this.extract(src.type, src.config);
         // Replace prior documents for a clean reprocess.
         await db.execute(
           sql`DELETE FROM documents WHERE source_id=${sourceId}`,
@@ -83,13 +84,15 @@ export class IngestionService {
     return { type: row.type, projectId: row.project_id, config: row.config };
   }
 
-  private extract(
+  private async extract(
     type: string,
     config: Record<string, unknown>,
-  ): RawDocument[] {
+  ): Promise<RawDocument[]> {
     const str = (v: unknown, fallback = ''): string =>
       typeof v === 'string' ? v : fallback;
-    if (type === 'manual') {
+    // 'upload' arrives with text already extracted by the controller, so it is
+    // treated like a manual document here.
+    if (type === 'manual' || type === 'upload') {
       return [
         {
           title: str(config.title, 'Untitled'),
@@ -105,6 +108,20 @@ export class IngestionService {
         titleColumn: config.titleColumn as string | undefined,
         bodyColumns: config.bodyColumns as string[] | undefined,
       });
+    }
+    if (type === 'website') {
+      const url = str(config.url);
+      if (!url) throw new Error('website source requires a url');
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Fetch ${url} failed: ${res.status}`);
+      const html = await res.text();
+      return [
+        {
+          title: extractTitle(html, url),
+          body: htmlToText(html),
+          originUrl: url,
+        },
+      ];
     }
     throw new Error(`Unsupported source type for ingestion: ${type}`);
   }

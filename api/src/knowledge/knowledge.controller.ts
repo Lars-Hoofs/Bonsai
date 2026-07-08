@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,12 +8,22 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser, Tenant } from '../auth/auth.types';
 import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
 import { CreateSourceDto } from './dto';
+import { extractUploadText } from './ingestion/extract-text';
 import { KnowledgeSourcesService } from './knowledge-sources.service';
+
+interface UploadedFileLike {
+  originalname: string;
+  mimetype: string;
+  buffer: Buffer;
+}
 
 @Controller('tenants/:tenantId/projects/:projectId/knowledge')
 export class KnowledgeController {
@@ -27,6 +38,33 @@ export class KnowledgeController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.knowledge.create(tenant, projectId, dto, user.id);
+  }
+
+  @Post('sources/upload')
+  @RequireRole('editor')
+  @UseInterceptors(FileInterceptor('file'))
+  upload(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @UploadedFile() file: UploadedFileLike | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    if (!file) throw new BadRequestException('No file uploaded (field "file")');
+    const text = extractUploadText(
+      file.originalname,
+      file.mimetype,
+      file.buffer,
+    );
+    return this.knowledge.create(
+      tenant,
+      projectId,
+      {
+        type: 'upload',
+        name: file.originalname,
+        config: { title: file.originalname, body: text },
+      },
+      user.id,
+    );
   }
 
   @Get('sources')
