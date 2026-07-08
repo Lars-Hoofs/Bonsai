@@ -2,13 +2,16 @@ import { Module } from '@nestjs/common';
 import { TenancyModule } from '../tenancy/tenancy.module';
 import { RagModule } from '../rag/rag.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
+import { ApiKeysModule } from '../apikeys/apikeys.module';
 import { ConversationsController } from './conversations.controller';
+import { ConversationsPublicController } from './conversations-public.controller';
 import { ConversationsService } from './conversations.service';
 import { ChatGateway } from './chat.gateway';
+import { PublicWidgetGuard } from './public-widget.guard';
 
 @Module({
-  imports: [TenancyModule, RagModule, WebhooksModule],
-  controllers: [ConversationsController],
-  providers: [ConversationsService, ChatGateway],
+  imports: [TenancyModule, RagModule, WebhooksModule, ApiKeysModule],
+  controllers: [ConversationsController, ConversationsPublicController],
+  providers: [ConversationsService, ChatGateway, PublicWidgetGuard],
 })
 export class ConversationsModule {}

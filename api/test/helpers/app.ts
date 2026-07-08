@@ -27,6 +27,7 @@ export async function buildTestApp(
     recrawlIntervalMs: 86_400_000,
     s3Region: 'us-east-1',
     selfCheckEnabled: true,
+    widgetCorsOrigins: [],
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(APP_CONFIG)

@@ -36,6 +36,10 @@ jest.spyOn(safeFetchModule, 'safeFetch').mockImplementation(
 interface IdBody {
   id: string;
 }
+interface StartBody {
+  id: string;
+  visitorSecret: string;
+}
 
 describe('analytics + webhooks e2e', () => {
   let container: StartedPostgreSqlContainer;
@@ -45,11 +49,13 @@ describe('analytics + webhooks e2e', () => {
   let token: string;
   let tenantId: string;
   let projectId: string;
+  let widgetKey: string;
   let receiver: Server;
   let receiverUrl: string;
   const received: { event: string; signature: string; body: string }[] = [];
 
   const proj = (): string => `/v1/tenants/${tenantId}/projects/${projectId}`;
+  const widgetBase = '/v1/widget/conversations';
   const auth = (): { Authorization: string } => ({
     Authorization: `Bearer ${token}`,
   });
@@ -85,6 +91,13 @@ describe('analytics + webhooks e2e', () => {
       .send({ name: 'Bot' })
       .expect(201);
     projectId = (p.body as IdBody).id;
+
+    const key = await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/api-keys`)
+      .set(auth())
+      .send({ name: 'widget', kind: 'public_widget', projectId })
+      .expect(201);
+    widgetKey = (key.body as { key: string }).key;
   }, 120000);
 
   afterAll(async () => {
@@ -103,22 +116,24 @@ describe('analytics + webhooks e2e', () => {
     expect(secret).toMatch(/^whsec_/);
 
     const convo = await request(app.getHttpServer())
-      .post(`${proj()}/conversations`)
-      .set(auth())
+      .post(widgetBase)
+      .set('x-bonsai-key', widgetKey)
       .send({})
       .expect(201);
-    const conversationId = (convo.body as IdBody).id;
+    const { id: conversationId, visitorSecret } = convo.body as StartBody;
 
     // An out-of-KB question produces a refused bot message.
     await request(app.getHttpServer())
-      .post(`${proj()}/conversations/${conversationId}/messages`)
-      .set(auth())
+      .post(`${widgetBase}/${conversationId}/messages`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', visitorSecret)
       .send({ content: 'iets volledig onbekends over astrofysica' })
       .expect(201);
 
     await request(app.getHttpServer())
-      .post(`${proj()}/conversations/${conversationId}/escalate`)
-      .set(auth())
+      .post(`${widgetBase}/${conversationId}/escalate`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', visitorSecret)
       .send({ reason: 'test' })
       .expect(201);
 

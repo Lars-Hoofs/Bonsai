@@ -42,6 +42,12 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Allowed browser origins for the real-time chat Socket.IO gateway
+  // (comma-separated). The `join` handler is the real security boundary
+  // (widget key + visitor secret check), but this still bounds which origins
+  // can open a socket connection at all. Empty by default (no cross-origin
+  // socket access) until configured for a deployment's widget-embed domains.
+  WIDGET_CORS_ORIGINS: z.string().default(''),
 });
 
 export interface AppConfig {
@@ -70,6 +76,7 @@ export interface AppConfig {
   s3SecretKey?: string;
   s3Bucket?: string;
   selfCheckEnabled: boolean;
+  widgetCorsOrigins: string[];
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -108,5 +115,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     s3SecretKey: d.S3_SECRET_KEY,
     s3Bucket: d.S3_BUCKET,
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
+    widgetCorsOrigins: d.WIDGET_CORS_ORIGINS.split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
   };
 }

@@ -23,6 +23,7 @@ const cfg: AppConfig = {
   recrawlIntervalMs: 86_400_000,
   s3Region: 'us-east-1',
   selfCheckEnabled: true,
+  widgetCorsOrigins: [],
 };
 
 describe('OpenAPI document', () => {

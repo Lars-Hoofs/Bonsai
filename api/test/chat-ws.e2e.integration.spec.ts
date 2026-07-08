@@ -12,6 +12,10 @@ import { TestIdp } from './helpers/oidc';
 interface IdBody {
   id: string;
 }
+interface StartBody {
+  id: string;
+  visitorSecret: string;
+}
 
 describe('chat websocket streaming e2e', () => {
   let container: StartedPostgreSqlContainer;
@@ -22,8 +26,9 @@ describe('chat websocket streaming e2e', () => {
   let url: string;
   let tenantId: string;
   let projectId: string;
+  let widgetKey: string;
 
-  const proj = (): string => `/v1/tenants/${tenantId}/projects/${projectId}`;
+  const widgetBase = '/v1/widget/conversations';
   const auth = (): { Authorization: string } => ({
     Authorization: `Bearer ${token}`,
   });
@@ -48,6 +53,13 @@ describe('chat websocket streaming e2e', () => {
       .send({ name: 'Bot' })
       .expect(201);
     projectId = (p.body as IdBody).id;
+
+    const key = await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/api-keys`)
+      .set(auth())
+      .send({ name: 'widget', kind: 'public_widget', projectId })
+      .expect(201);
+    widgetKey = (key.body as { key: string }).key;
   }, 120000);
 
   afterAll(async () => {
@@ -55,13 +67,13 @@ describe('chat websocket streaming e2e', () => {
     await container.stop();
   });
 
-  it('broadcasts visitor and bot messages to a joined client', async () => {
+  it('broadcasts visitor and bot messages to a joined client with a valid key + secret', async () => {
     const convo = await request(app.getHttpServer())
-      .post(`${proj()}/conversations`)
-      .set(auth())
+      .post(widgetBase)
+      .set('x-bonsai-key', widgetKey)
       .send({})
       .expect(201);
-    const conversationId = (convo.body as IdBody).id;
+    const { id: conversationId, visitorSecret } = convo.body as StartBody;
 
     const client: Socket = io(url, {
       transports: ['websocket'],
@@ -72,14 +84,22 @@ describe('chat websocket streaming e2e', () => {
       received.push(m),
     );
 
-    await new Promise<void>((resolve, reject) => {
-      client.on('connect_error', reject);
-      client.emit('join', { conversationId }, () => resolve());
-    });
+    const joinAck = await new Promise<{ ok?: true; error?: string }>(
+      (resolve, reject) => {
+        client.on('connect_error', reject);
+        client.emit(
+          'join',
+          { conversationId, visitorSecret, key: widgetKey },
+          (ack: { ok?: true; error?: string }) => resolve(ack),
+        );
+      },
+    );
+    expect(joinAck.ok).toBe(true);
 
     await request(app.getHttpServer())
-      .post(`${proj()}/conversations/${conversationId}/messages`)
-      .set(auth())
+      .post(`${widgetBase}/${conversationId}/messages`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', visitorSecret)
       .send({ content: 'hallo daar' })
       .expect(201);
 
@@ -89,5 +109,45 @@ describe('chat websocket streaming e2e', () => {
 
     expect(received.some((m) => m.role === 'visitor')).toBe(true);
     expect(received.some((m) => m.role === 'bot')).toBe(true);
+  });
+
+  it('rejects join with a wrong/missing visitor secret and does not deliver broadcasts', async () => {
+    const convo = await request(app.getHttpServer())
+      .post(widgetBase)
+      .set('x-bonsai-key', widgetKey)
+      .send({})
+      .expect(201);
+    const { id: conversationId } = convo.body as StartBody;
+
+    const client: Socket = io(url, {
+      transports: ['websocket'],
+      forceNew: true,
+    });
+    const received: { role: string; content: string }[] = [];
+    client.on('message', (m: { role: string; content: string }) =>
+      received.push(m),
+    );
+
+    const joinAck = await new Promise<{ ok?: true; error?: string }>(
+      (resolve, reject) => {
+        client.on('connect_error', reject);
+        client.emit(
+          'join',
+          {
+            conversationId,
+            visitorSecret: 'totally-wrong-secret',
+            key: widgetKey,
+          },
+          (ack: { ok?: true; error?: string }) => resolve(ack),
+        );
+      },
+    );
+    expect(joinAck.error).toBe('unauthorized');
+
+    // A message should NOT arrive at this client, since join must have
+    // failed to actually join the room.
+    await new Promise((r) => setTimeout(r, 300));
+    client.close();
+    expect(received.length).toBe(0);
   });
 });

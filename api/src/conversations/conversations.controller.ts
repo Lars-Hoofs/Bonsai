@@ -6,68 +6,24 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
-  UseGuards,
 } from '@nestjs/common';
 import { CurrentUser, Tenant } from '../auth/auth.types';
 import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
-import { RateLimitGuard } from '../usage/rate-limit.guard';
 import { ConversationsService } from './conversations.service';
-import {
-  AgentMessageDto,
-  EscalateDto,
-  PostMessageDto,
-  StartConversationDto,
-} from './dto';
+import { AgentMessageDto } from './dto';
 
+/**
+ * Agent/back-office side of conversations: OIDC + tenant-membership gated
+ * (global AuthGuard + MembershipGuard). Visitor-facing actions (start a
+ * conversation, post a visitor message, escalate, reload history as the
+ * visitor) live on the public, widget-key + visitor-secret gated controller
+ * instead (`ConversationsPublicController`) — an anonymous website visitor
+ * has no OIDC identity to satisfy these guards with.
+ */
 @Controller('tenants/:tenantId/projects/:projectId/conversations')
 export class ConversationsController {
   constructor(private readonly conversations: ConversationsService) {}
-
-  @Post()
-  @RequireRole('viewer')
-  start(
-    @Tenant() tenant: TenantRef,
-    @Param('projectId', ParseUUIDPipe) projectId: string,
-    @Body() dto: StartConversationDto,
-  ) {
-    return this.conversations.start(tenant.schemaName, projectId, dto);
-  }
-
-  @Post(':conversationId/messages')
-  @RequireRole('viewer')
-  @UseGuards(RateLimitGuard)
-  postMessage(
-    @Tenant() tenant: TenantRef,
-    @Param('projectId', ParseUUIDPipe) projectId: string,
-    @Param('conversationId', ParseUUIDPipe) conversationId: string,
-    @Body() dto: PostMessageDto,
-  ) {
-    return this.conversations.postVisitorMessage(
-      tenant.id,
-      tenant.schemaName,
-      projectId,
-      conversationId,
-      dto.content,
-    );
-  }
-
-  @Post(':conversationId/escalate')
-  @RequireRole('viewer')
-  async escalate(
-    @Tenant() tenant: TenantRef,
-    @Param('projectId', ParseUUIDPipe) projectId: string,
-    @Param('conversationId', ParseUUIDPipe) conversationId: string,
-    @Body() dto: EscalateDto,
-  ): Promise<{ ok: true }> {
-    await this.conversations.escalate(
-      tenant.schemaName,
-      projectId,
-      conversationId,
-      dto.reason ?? 'visitor_request',
-    );
-    return { ok: true };
-  }
 
   @Get()
   @RequireRole('agent')

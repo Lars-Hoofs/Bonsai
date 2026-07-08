@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
@@ -14,6 +19,23 @@ export interface ConversationSummary {
   language: string;
   startedAt: string;
   updatedAt: string;
+}
+
+function generateVisitorSecret(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+/**
+ * Constant-time comparison of two secrets. Both sides are first hashed to a
+ * fixed-length digest so `timingSafeEqual` never throws on a length mismatch
+ * (which would otherwise leak the true secret's length via an exception vs.
+ * normal-return timing difference), and a plain `===` is never used for
+ * secret comparison.
+ */
+function secretsMatch(a: string, b: string): boolean {
+  const ah = createHash('sha256').update(a).digest();
+  const bh = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ah, bh);
 }
 
 export interface MessageRow {
@@ -43,16 +65,17 @@ export class ConversationsService {
     schemaName: string,
     projectId: string,
     input: { visitorId?: string; language?: string },
-  ): Promise<ConversationSummary> {
+  ): Promise<ConversationSummary & { visitorSecret: string }> {
+    const visitorSecret = generateVisitorSecret();
     const row = await this.tenantDb.withTenant(schemaName, async (db) => {
       const r = await db.execute(
-        sql`INSERT INTO conversations (project_id, visitor_id, language)
-            VALUES (${projectId}, ${input.visitorId ?? null}, ${input.language ?? 'nl'})
+        sql`INSERT INTO conversations (project_id, visitor_id, language, visitor_secret)
+            VALUES (${projectId}, ${input.visitorId ?? null}, ${input.language ?? 'nl'}, ${visitorSecret})
             RETURNING *`,
       );
       return r.rows[0];
     });
-    return this.mapConversation(row);
+    return { ...this.mapConversation(row), visitorSecret };
   }
 
   /**
@@ -67,6 +90,7 @@ export class ConversationsService {
     projectId: string,
     conversationId: string,
     text: string,
+    visitorSecret: string,
   ): Promise<{
     status: string;
     reply?: {
@@ -77,10 +101,11 @@ export class ConversationsService {
       citations: { documentTitle: string; documentId: string }[];
     };
   }> {
-    const convo = await this.requireConversation(
+    const convo = await this.requireConversationForVisitor(
       schemaName,
       projectId,
       conversationId,
+      visitorSecret,
     );
     await this.insertMessage(schemaName, conversationId, {
       role: 'visitor',
@@ -139,11 +164,13 @@ export class ConversationsService {
     projectId: string,
     conversationId: string,
     reason: string,
+    visitorSecret: string,
   ): Promise<void> {
-    const convo = await this.requireConversation(
+    const convo = await this.requireConversationForVisitor(
       schemaName,
       projectId,
       conversationId,
+      visitorSecret,
     );
     if (convo.status === 'handover') return;
     await this.tenantDb.withTenant(schemaName, async (db) => {
@@ -197,7 +224,36 @@ export class ConversationsService {
       projectId,
       conversationId,
     );
-    const messages = await this.tenantDb.withTenant(schemaName, async (db) => {
+    const messages = await this.fetchMessages(schemaName, conversationId);
+    return { conversation: convo, messages };
+  }
+
+  /**
+   * Visitor-facing history reload: same shape as `getWithMessages`, but
+   * ownership is proven by the per-conversation visitor secret (issued once,
+   * at `start`) rather than by OIDC session + tenant membership.
+   */
+  async getWithMessagesForVisitor(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+  ): Promise<{ conversation: ConversationSummary; messages: MessageRow[] }> {
+    const convo = await this.requireConversationForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+    );
+    const messages = await this.fetchMessages(schemaName, conversationId);
+    return { conversation: convo, messages };
+  }
+
+  private async fetchMessages(
+    schemaName: string,
+    conversationId: string,
+  ): Promise<MessageRow[]> {
+    return this.tenantDb.withTenant(schemaName, async (db) => {
       const r = await db.execute(
         sql`SELECT id, role, content, confidence, refused, created_at
             FROM messages WHERE conversation_id=${conversationId} ORDER BY created_at`,
@@ -211,7 +267,6 @@ export class ConversationsService {
         createdAt: String(row.created_at),
       }));
     });
-    return { conversation: convo, messages };
   }
 
   async agentMessage(
@@ -288,6 +343,38 @@ export class ConversationsService {
     });
     if (!rows[0]) throw new NotFoundException('Conversation not found');
     return this.mapConversation(rows[0]);
+  }
+
+  /**
+   * Visitor-scoped lookup: id+project not found -> 404 (NotFoundException);
+   * found but the supplied visitor secret doesn't match the row's
+   * `visitor_secret` -> 401 (UnauthorizedException). A wrong secret must
+   * never leak conversation data (no partial fields, no distinguishing the
+   * two failure modes to the caller beyond the status code).
+   */
+  private async requireConversationForVisitor(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+  ): Promise<ConversationSummary> {
+    const rows = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT * FROM conversations WHERE id=${conversationId} AND project_id=${projectId}`,
+      );
+      return r.rows;
+    });
+    const row = rows[0];
+    if (!row) throw new NotFoundException('Conversation not found');
+    const storedSecret = row.visitor_secret as string;
+    if (
+      !visitorSecret ||
+      !storedSecret ||
+      !secretsMatch(visitorSecret, storedSecret)
+    ) {
+      throw new UnauthorizedException('Invalid visitor secret');
+    }
+    return this.mapConversation(row);
   }
 
   private mapConversation(row: Record<string, unknown>): ConversationSummary {
