@@ -32,6 +32,9 @@ export async function runMigrations(
     for (const file of files) {
       await client.query('BEGIN');
       try {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          opts.track,
+        ]);
         const seen = await client.query(
           'SELECT 1 FROM public.migrations WHERE track = $1 AND version = $2',
           [opts.track, file],
