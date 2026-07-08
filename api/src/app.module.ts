@@ -7,6 +7,7 @@ import { AuditModule } from './audit/audit.module';
 import { TenantsModule } from './tenants/tenants.module';
 import { ProjectsModule } from './projects/projects.module';
 import { ApiKeysModule } from './apikeys/apikeys.module';
+import { KnowledgeModule } from './knowledge/knowledge.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { ApiKeysModule } from './apikeys/apikeys.module';
     TenantsModule,
     ProjectsModule,
     ApiKeysModule,
+    KnowledgeModule,
   ],
   controllers: [HealthController],
 })
