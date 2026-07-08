@@ -1,0 +1,173 @@
+import { randomUUID } from 'node:crypto';
+import { sql } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+import { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { TenantProvisioningService } from '../src/tenancy/tenant-provisioning.service';
+import { TenantDbService } from '../src/tenancy/tenant-db.service';
+import { ChunkingService } from '../src/knowledge/chunking/chunking.service';
+import { FakeEmbeddingProvider } from '../src/knowledge/embedding/fake-embedding.provider';
+import type { EmbeddingProvider } from '../src/knowledge/embedding/embedding-provider';
+import {
+  IngestionService,
+  SourceBusyError,
+} from '../src/knowledge/ingestion/ingestion.service';
+import { KnowledgeSourcesService } from '../src/knowledge/knowledge-sources.service';
+import { AuditService } from '../src/audit/audit.service';
+import type { AppConfig } from '../src/config/config';
+import { runControlPlaneMigrations } from '../src/db/run-control-plane-migrations';
+import * as schema from '../src/db/schema';
+import { startPg } from './helpers/pg';
+
+/** An embedder whose `embed` call never resolves — simulates a pathological,
+ * arbitrarily slow embedding batch so the inline-ingestion timeout can be
+ * exercised deterministically and fast, without a real network hang. */
+class NeverResolvingEmbeddingProvider implements EmbeddingProvider {
+  readonly dimension = 1024;
+  embed(): Promise<number[][]> {
+    return new Promise(() => {
+      /* never resolves */
+    });
+  }
+}
+
+const cfg = (overrides: Partial<AppConfig> = {}): AppConfig =>
+  ({
+    ingestionStaleMs: 15 * 60 * 1000,
+    ingestionTimeoutMs: 60_000,
+    ...overrides,
+  }) as AppConfig;
+
+describe('stale-processing ingestion reaper + inline timeout', () => {
+  let container: StartedPostgreSqlContainer;
+  let pool: Pool;
+  let tenantDb: TenantDbService;
+  let schemaName: string;
+  const projectId = randomUUID();
+
+  beforeAll(async () => {
+    ({ container, pool } = await startPg());
+    await runControlPlaneMigrations(pool);
+    const prov = new TenantProvisioningService(pool, drizzle(pool, { schema }));
+    ({ schemaName } = await prov.createTenant({ name: 'S', slug: 's' }));
+    tenantDb = new TenantDbService(pool);
+  }, 180000);
+
+  afterAll(async () => {
+    await pool.end();
+    await container.stop();
+  });
+
+  async function insertSource(
+    config: Record<string, unknown>,
+  ): Promise<string> {
+    return tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`INSERT INTO knowledge_sources (project_id, type, name, config, status)
+            VALUES (${projectId}, 'manual', 'temp', ${JSON.stringify(config)}::jsonb, 'pending')
+            RETURNING id`,
+      );
+      return (r.rows[0] as { id: string }).id;
+    });
+  }
+
+  async function setStatus(
+    sourceId: string,
+    status: string,
+    updatedAtOffsetMs?: number,
+  ): Promise<void> {
+    await tenantDb.withTenant(schemaName, (db) =>
+      updatedAtOffsetMs === undefined
+        ? db.execute(
+            sql`UPDATE knowledge_sources SET status=${status}, updated_at=now() WHERE id=${sourceId}`,
+          )
+        : db.execute(
+            sql`UPDATE knowledge_sources SET status=${status}, updated_at=now() + (${updatedAtOffsetMs}::text || ' milliseconds')::interval WHERE id=${sourceId}`,
+          ),
+    );
+  }
+
+  async function getStatus(sourceId: string): Promise<string> {
+    const r = await tenantDb.withTenant(schemaName, (db) =>
+      db.execute(
+        sql`SELECT status FROM knowledge_sources WHERE id=${sourceId}`,
+      ),
+    );
+    return (r.rows[0] as { status: string }).status;
+  }
+
+  it('reprocesses a source stuck in processing past the stale threshold', async () => {
+    const ingestion = new IngestionService(
+      tenantDb,
+      new ChunkingService(),
+      new FakeEmbeddingProvider(1024),
+      cfg({ ingestionStaleMs: 1000 }), // 1s stale threshold for a fast test
+    );
+    const sourceId = await insertSource({ title: 'T', body: 'hallo wereld' });
+
+    // Simulate a crash mid-ingestion: status left at 'processing' with an
+    // updated_at far enough in the past to exceed the 1s stale threshold.
+    await setStatus(sourceId, 'processing', -5000);
+
+    await ingestion.ingestSource(schemaName, sourceId);
+    expect(await getStatus(sourceId)).toBe('processed');
+  });
+
+  it('refuses to clobber a freshly-processing (non-stale) source', async () => {
+    const ingestion = new IngestionService(
+      tenantDb,
+      new ChunkingService(),
+      new FakeEmbeddingProvider(1024),
+      cfg({ ingestionStaleMs: 15 * 60 * 1000 }), // realistic 15 min threshold
+    );
+    const sourceId = await insertSource({ title: 'T', body: 'hallo wereld' });
+
+    // updated_at just now: well within the stale threshold, so this looks
+    // like a genuinely in-flight run, not an abandoned one.
+    await setStatus(sourceId, 'processing');
+
+    await expect(
+      ingestion.ingestSource(schemaName, sourceId),
+    ).rejects.toBeInstanceOf(SourceBusyError);
+
+    // Status must be untouched — the (hypothetical) owning run, not this
+    // rejected caller, is the only one allowed to transition it.
+    expect(await getStatus(sourceId)).toBe('processing');
+  });
+
+  it('bounds a pathologically slow inline ingestion with a timeout', async () => {
+    const ingestion = new IngestionService(
+      tenantDb,
+      new ChunkingService(),
+      new NeverResolvingEmbeddingProvider(),
+      cfg(),
+    );
+    const audit = new AuditService(drizzle(pool, { schema }));
+    const knowledge = new KnowledgeSourcesService(
+      tenantDb,
+      ingestion,
+      audit,
+      cfg({ ingestionTimeoutMs: 300 }), // small timeout to keep the test fast
+    );
+
+    const start = Date.now();
+    await expect(
+      knowledge.create(
+        { id: randomUUID(), schemaName },
+        projectId,
+        {
+          type: 'manual',
+          name: 'slow',
+          // Non-empty body so chunking produces at least one chunk, which is
+          // what actually reaches the never-resolving embed() call.
+          config: { title: 'Slow', body: 'een twee drie vier vijf zes' },
+        },
+        randomUUID(),
+      ),
+    ).rejects.toThrow(/timed out/i);
+    const elapsed = Date.now() - start;
+    // Bounded well under the test's own 120s jest timeout; generous slack
+    // above the 300ms configured timeout for CI scheduling jitter.
+    expect(elapsed).toBeLessThan(10_000);
+  });
+});

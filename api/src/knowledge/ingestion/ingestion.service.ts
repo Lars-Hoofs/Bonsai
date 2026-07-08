@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { APP_CONFIG } from '../../config/config';
+import type { AppConfig } from '../../config/config';
 import { TenantDbService } from '../../tenancy/tenant-db.service';
 import { ChunkingService } from '../chunking/chunking.service';
 import { EMBEDDING_PROVIDER } from '../embedding/embedding-provider';
@@ -9,6 +11,33 @@ import type { EmbeddingProvider } from '../embedding/embedding-provider';
 import { csvToDocuments, RawDocument } from './csv';
 import { extractTitle, htmlToText } from './extract-text';
 import { safeFetch } from '../../common/safe-fetch';
+
+/** Fallback used when IngestionService is constructed directly (tests, the
+ * BullMQ CrawlService) without an AppConfig — matches the config default. */
+const DEFAULT_STALE_MS = 900_000;
+
+/** A source is considered abandoned (crashed mid-ingestion, never reached the
+ * catch block) if it has sat in 'processing' longer than this. */
+export function isStaleProcessing(
+  status: string,
+  updatedAt: Date,
+  staleMs: number,
+): boolean {
+  return status === 'processing' && Date.now() - updatedAt.getTime() >= staleMs;
+}
+
+/**
+ * Thrown when a source is already being processed by a still-live run (i.e.
+ * 'processing' but not yet stale). Deliberately does NOT flip the source to
+ * 'failed' — unlike other ingestion errors — because the other, genuinely
+ * in-flight run owns that status transition; doing so here would race it.
+ */
+export class SourceBusyError extends Error {
+  constructor(sourceId: string) {
+    super(`Source ${sourceId} is already being processed`);
+    this.name = 'SourceBusyError';
+  }
+}
 
 /** Maps a document language to a Postgres text-search configuration. */
 function regconfig(language: string): string {
@@ -29,18 +58,42 @@ function docHash(raw: { title: string; body: string }): string {
 export class IngestionService {
   private readonly logger = new Logger(IngestionService.name);
 
+  private readonly staleMs: number;
+
   constructor(
     private readonly tenantDb: TenantDbService,
     private readonly chunking: ChunkingService,
     @Inject(EMBEDDING_PROVIDER) private readonly embedder: EmbeddingProvider,
-  ) {}
+    @Optional() @Inject(APP_CONFIG) cfg?: AppConfig,
+  ) {
+    this.staleMs = cfg?.ingestionStaleMs ?? DEFAULT_STALE_MS;
+  }
 
   /**
    * (Re)ingests a source: extracts raw documents from its config, then for each
    * document chunks -> embeds -> indexes, replacing any prior chunks. Sets
    * source/document status transitions and records errors. Idempotent.
+   *
+   * Guards against clobbering a genuinely in-flight ingestion: a source whose
+   * status is already 'processing' is only re-entered if it has gone stale
+   * (no update in `staleMs`), i.e. the previous run crashed without ever
+   * reaching the catch block below, so it would otherwise be stuck forever.
    */
   async ingestSource(schemaName: string, sourceId: string): Promise<void> {
+    // Read-then-guard happens in its own (implicit) transaction, separate
+    // from the try/catch below: if another run genuinely owns this source
+    // right now, bail out without touching its status at all — only the
+    // owning run's own try/catch may transition it to 'processed'/'failed'.
+    const initial = await this.tenantDb.withTenant(schemaName, (db) =>
+      this.loadSource(db, sourceId),
+    );
+    if (
+      initial.status === 'processing' &&
+      !isStaleProcessing(initial.status, initial.updatedAt, this.staleMs)
+    ) {
+      throw new SourceBusyError(sourceId);
+    }
+
     try {
       await this.tenantDb.withTenant(schemaName, async (db) => {
         const src = await this.loadSource(db, sourceId);
@@ -101,15 +154,29 @@ export class IngestionService {
     type: string;
     projectId: string;
     config: Record<string, unknown>;
+    status: string;
+    updatedAt: Date;
   }> {
     const r = await db.execute(
-      sql`SELECT type, project_id, config FROM knowledge_sources WHERE id=${sourceId}`,
+      sql`SELECT type, project_id, config, status, updated_at FROM knowledge_sources WHERE id=${sourceId}`,
     );
     const row = r.rows[0] as
-      | { type: string; project_id: string; config: Record<string, unknown> }
+      | {
+          type: string;
+          project_id: string;
+          config: Record<string, unknown>;
+          status: string;
+          updated_at: Date;
+        }
       | undefined;
     if (!row) throw new Error(`Source ${sourceId} not found`);
-    return { type: row.type, projectId: row.project_id, config: row.config };
+    return {
+      type: row.type,
+      projectId: row.project_id,
+      config: row.config,
+      status: row.status,
+      updatedAt: row.updated_at,
+    };
   }
 
   private async extract(

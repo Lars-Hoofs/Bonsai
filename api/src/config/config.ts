@@ -29,6 +29,16 @@ const schema = z.object({
   // disabled (on-demand reprocess still works).
   REDIS_URL: z.string().url().optional(),
   RECRAWL_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
+  // A source stuck in 'processing' for longer than this (process crash /
+  // uncaught termination mid-ingestion, so no catch block ever ran) is
+  // treated as stale/abandoned and becomes eligible for re-ingestion again,
+  // via reprocess or the recrawl scan — otherwise it could never recover.
+  INGESTION_STALE_MS: z.coerce.number().int().positive().default(900_000),
+  // Hard cap on inline (synchronous, in the HTTP request path) ingestion, so
+  // a pathological source (slow website fetch, huge embedding batch) cannot
+  // hold the request open indefinitely. Ingestion keeps running in the
+  // background past this point; the request just stops waiting for it.
+  INGESTION_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   // Object storage (MinIO / S3-compatible) for raw uploads. Optional: when
   // unset, uploads still work (text is extracted) but the raw file isn't kept.
   S3_ENDPOINT: z.string().url().optional(),
@@ -70,6 +80,8 @@ export interface AppConfig {
   rateLimitPerMinute: number;
   redisUrl?: string;
   recrawlIntervalMs: number;
+  ingestionStaleMs: number;
+  ingestionTimeoutMs: number;
   s3Endpoint?: string;
   s3Region: string;
   s3AccessKey?: string;
@@ -109,6 +121,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     rateLimitPerMinute: d.RATE_LIMIT_PER_MINUTE,
     redisUrl: d.REDIS_URL,
     recrawlIntervalMs: d.RECRAWL_INTERVAL_MS,
+    ingestionStaleMs: d.INGESTION_STALE_MS,
+    ingestionTimeoutMs: d.INGESTION_TIMEOUT_MS,
     s3Endpoint: d.S3_ENDPOINT,
     s3Region: d.S3_REGION,
     s3AccessKey: d.S3_ACCESS_KEY,

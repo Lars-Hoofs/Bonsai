@@ -1,9 +1,39 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { AuditService } from '../audit/audit.service';
+import { APP_CONFIG } from '../config/config';
+import type { AppConfig } from '../config/config';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { IngestionService } from './ingestion/ingestion.service';
 import { validateSourceConfig } from './source-config-validation';
+
+const DEFAULT_INGESTION_TIMEOUT_MS = 60_000;
+
+/**
+ * Bounds a promise to at most `timeoutMs`. Ingestion itself keeps running in
+ * the background past the timeout (there is no cancellation of the
+ * in-flight work) — this only stops the HTTP request from waiting on it, so
+ * a pathological source (slow fetch, huge embedding batch) cannot hold the
+ * request/worker open indefinitely. Callers must not assume the underlying
+ * operation actually stopped.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Ingestion timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
 
 export interface SourceRow {
   id: string;
@@ -40,11 +70,45 @@ function mapSource(r: Record<string, unknown>): SourceRow {
 
 @Injectable()
 export class KnowledgeSourcesService {
+  private readonly ingestionTimeoutMs: number;
+
   constructor(
     private readonly tenantDb: TenantDbService,
     private readonly ingestion: IngestionService,
     private readonly audit: AuditService,
-  ) {}
+    @Inject(APP_CONFIG) cfg?: AppConfig,
+  ) {
+    this.ingestionTimeoutMs =
+      cfg?.ingestionTimeoutMs ?? DEFAULT_INGESTION_TIMEOUT_MS;
+  }
+
+  /**
+   * Runs ingestion inline (in the HTTP request path) but bounded by
+   * `ingestionTimeoutMs`: a pathological source (slow website fetch, huge
+   * embedding batch) can no longer hold the request open indefinitely. The
+   * ingestion itself is left running in the background past the timeout —
+   * `ingestSource` already leaves the row at 'processing' with a fresh
+   * `updated_at` at that point, which the stale-processing reaper (see
+   * IngestionService/CrawlService) will recover if this particular run never
+   * reaches its own catch block. We swallow (but log) a post-timeout
+   * rejection/resolution here purely to avoid an unhandled promise rejection;
+   * the request itself has already returned by then.
+   *
+   * Deferred optimization: move ingestion to a background queue entirely
+   * (BullMQ already exists for re-crawl) so the request never waits on it at
+   * all — out of scope here.
+   */
+  private async ingestBounded(
+    schemaName: string,
+    sourceId: string,
+  ): Promise<void> {
+    const run = this.ingestion.ingestSource(schemaName, sourceId);
+    run.catch(() => {
+      /* handled via withTimeout below, or intentionally ignored once the
+       * request has already returned past the timeout. */
+    });
+    await withTimeout(run, this.ingestionTimeoutMs);
+  }
 
   /** Creates a source (status pending) and ingests it synchronously. */
   async create(
@@ -62,7 +126,7 @@ export class KnowledgeSourcesService {
       );
       return (r.rows[0] as { id: string }).id;
     });
-    await this.ingestion.ingestSource(tenant.schemaName, id);
+    await this.ingestBounded(tenant.schemaName, id);
     await this.audit.record({
       tenantId: tenant.id,
       actorUserId,
@@ -97,14 +161,18 @@ export class KnowledgeSourcesService {
     return mapSource(rows[0]);
   }
 
-  /** Re-runs ingestion for an existing source. */
+  /**
+   * Re-runs ingestion for an existing source. Rejects with the same error
+   * IngestionService throws (e.g. `SourceBusyError`) if the source is
+   * currently owned by a still-live, non-stale 'processing' run.
+   */
   async reprocess(
     schemaName: string,
     projectId: string,
     id: string,
   ): Promise<SourceRow> {
     await this.get(schemaName, projectId, id); // 404 if not in this project
-    await this.ingestion.ingestSource(schemaName, id);
+    await this.ingestBounded(schemaName, id);
     return this.get(schemaName, projectId, id);
   }
 

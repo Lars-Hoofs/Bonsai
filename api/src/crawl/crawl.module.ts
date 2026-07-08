@@ -38,6 +38,7 @@ class CrawlBootstrap implements OnModuleInit, OnModuleDestroy {
       this.pool,
       this.tenantDb,
       this.ingestion,
+      this.cfg.ingestionStaleMs,
     );
     this.service.start();
     await this.service.scheduleRecurring(this.cfg.recrawlIntervalMs);

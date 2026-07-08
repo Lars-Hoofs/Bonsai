@@ -7,6 +7,11 @@ import { IngestionService } from '../knowledge/ingestion/ingestion.service';
 
 const QUEUE = 'recrawl';
 
+/** Matches IngestionService's DEFAULT_STALE_MS fallback for direct
+ * construction (no AppConfig) — kept in sync manually since CrawlService, like
+ * IngestionService, is constructed directly (not via Nest DI) in some paths. */
+const DEFAULT_STALE_MS = 900_000;
+
 interface RecrawlJob {
   schemaName: string;
   sourceId: string;
@@ -31,6 +36,7 @@ export class CrawlService {
     private readonly pool: Pool,
     private readonly tenantDb: TenantDbService,
     private readonly ingestion: IngestionService,
+    private readonly staleMs: number = DEFAULT_STALE_MS,
   ) {}
 
   private connection(): { host: string; port: number } {
@@ -73,7 +79,14 @@ export class CrawlService {
     await this.queue.add('recrawl', { schemaName, sourceId });
   }
 
-  /** Walks every active tenant's website sources and enqueues a re-crawl each. */
+  /**
+   * Walks every active tenant's website sources and enqueues a re-crawl each.
+   *
+   * Includes sources stuck in 'processing' past the stale threshold (a
+   * crashed prior run that never reached its catch block) so they self-heal
+   * on the next scheduled scan rather than staying stuck forever — not just
+   * sources already sitting at 'processed'.
+   */
   async scanAndEnqueueAll(): Promise<number> {
     const tenants = await this.pool.query<{ schema_name: string }>(
       `SELECT schema_name FROM tenants WHERE status = 'active'`,
@@ -82,7 +95,9 @@ export class CrawlService {
     for (const t of tenants.rows) {
       const sources = await this.tenantDb.withTenant(t.schema_name, (db) =>
         db.execute(
-          sql`SELECT id FROM knowledge_sources WHERE type = 'website'`,
+          sql`SELECT id FROM knowledge_sources
+              WHERE type = 'website'
+                AND (status <> 'processing' OR updated_at < now() - (${this.staleMs}::text || ' milliseconds')::interval)`,
         ),
       );
       for (const row of sources.rows as { id: string }[]) {
