@@ -81,6 +81,17 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Multi-query retrieval (query expansion + cross-query RRF fusion): before
+  // retrieving, an extra LLM call proposes alternative phrasings of the
+  // question, each is retrieved independently, and the results are fused.
+  // Improves recall on vague/short questions. On by default; requires a real
+  // LLM to be configured (LLM_API_URL/KEY/MODEL) — with only the fake LLM
+  // (tests/dev), expansion is skipped regardless of this flag so behavior
+  // stays deterministic/single-query.
+  MULTI_QUERY_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   // Billing/paywall enforcement. OFF by default for now (no payment provider
   // wired), so every tenant runs as if on a paid plan: answer usage is still
   // METERED for analytics, but the monthly quota is never enforced (no 402).
@@ -137,6 +148,7 @@ export interface AppConfig {
   s3SecretKey?: string;
   s3Bucket?: string;
   selfCheckEnabled: boolean;
+  multiQueryEnabled: boolean;
   billingEnabled: boolean;
   widgetCorsOrigins: string[];
   metricsToken?: string;
@@ -184,6 +196,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     s3SecretKey: d.S3_SECRET_KEY,
     s3Bucket: d.S3_BUCKET,
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
+    multiQueryEnabled: d.MULTI_QUERY_ENABLED,
     billingEnabled: d.BILLING_ENABLED,
     widgetCorsOrigins: d.WIDGET_CORS_ORIGINS.split(',')
       .map((s) => s.trim())

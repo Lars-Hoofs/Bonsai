@@ -93,4 +93,40 @@ describe('RAG hybrid retrieval', () => {
     );
     expect(results).toHaveLength(0);
   });
+
+  describe('retrieveMulti (cross-query RRF fusion)', () => {
+    it('fuses candidates across two queries, surfacing docs each query alone would miss', async () => {
+      // 'openingstijden' alone should surface the Openingstijden doc;
+      // 'retourneren' alone should surface the Retourneren doc. Neither
+      // single query is a strong match for the other document. Fusion must
+      // recover both.
+      const fused = await retrieval.retrieveMulti(schemaName, projectId, [
+        'wat zijn de openingstijden van de winkel',
+        'kan ik iets retourneren',
+      ]);
+      const titles = fused.map((c) => c.documentTitle);
+      expect(titles).toContain('Openingstijden');
+      expect(titles).toContain('Retourneren');
+    });
+
+    it('behaves identically to retrieve() for a single-element query array', async () => {
+      const single = await retrieval.retrieve(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      const multi = await retrieval.retrieveMulti(schemaName, projectId, [
+        'wat zijn de openingstijden van de winkel',
+      ]);
+      expect(multi).toEqual(single);
+    });
+
+    it('scopes retrieveMulti to the given project (no cross-project leakage)', async () => {
+      const results = await retrieval.retrieveMulti(schemaName, randomUUID(), [
+        'openingstijden',
+        'retourneren',
+      ]);
+      expect(results).toHaveLength(0);
+    });
+  });
 });

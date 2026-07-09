@@ -25,8 +25,10 @@ const isSelfCheckCall = (messages: LlmMessage[]): boolean =>
     (m) => m.role === 'system' && m.content.includes('BONSAI_SELF_CHECK_V1'),
   );
 
-const cfg = (selfCheckEnabled: boolean): AppConfig =>
-  ({ selfCheckEnabled }) as AppConfig;
+const cfg = (
+  selfCheckEnabled: boolean,
+  extra: Partial<AppConfig> = {},
+): AppConfig => ({ selfCheckEnabled, ...extra }) as AppConfig;
 
 describe('RAG answer pipeline (anti-hallucination)', () => {
   let container: StartedPostgreSqlContainer;
@@ -267,5 +269,116 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
         'wat zijn de openingstijden van de winkel',
       ),
     ).rejects.toThrow(NotFoundException);
+  });
+
+  describe('multi-query retrieval (query expansion)', () => {
+    it('with the fake LLM (no real llm configured), behaves exactly as before: single query, no expansion', async () => {
+      // No llmApiUrl configured on `cfg`, so expandQuery must fall back to
+      // [question] regardless of multiQueryEnabled — existing deterministic
+      // behavior with the fake LLM must be unaffected.
+      const res = await answerWith(new FakeLlmProvider()).answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      expect(res.refused).toBe(false);
+      expect(res.citations[0].documentTitle).toBe('Openingstijden');
+    });
+
+    it('expandQuery returns 3 queries and uses them to retrieve a variant-only-matching chunk, when a real llm is configured', async () => {
+      // A document that shares NO tokens with the primary question, but does
+      // share tokens with one of the two variant phrasings a stub LLM
+      // returns for query expansion.
+      const variantSourceId = await tenantDb.withTenant(
+        schemaName,
+        async (db) => {
+          const s = await db.execute(
+            sql`INSERT INTO knowledge_sources (project_id, type, name, config, status)
+              VALUES (${projectId}, 'manual', 'Parkeren',
+                ${JSON.stringify({
+                  title: 'Parkeren',
+                  body: 'Gratis parkeren is mogelijk op onze eigen parkeerplaats achter het gebouw.',
+                  language: 'nl',
+                })}::jsonb, 'pending') RETURNING id`,
+          );
+          return (s.rows[0] as { id: string }).id;
+        },
+      );
+      await ingestion.ingestSource(schemaName, variantSourceId);
+
+      let expandCalls = 0;
+      const variantLlm: LlmProvider = {
+        complete: (messages) => {
+          const isExpand = messages.some(
+            (m) =>
+              m.role === 'system' &&
+              m.content.includes('alternatieve formulering'),
+          );
+          if (isExpand) {
+            expandCalls++;
+            return Promise.resolve(
+              '1. kan ik ergens parkeren bij de winkel\n' +
+                '2. is er een parkeerplaats aanwezig',
+            );
+          }
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          return Promise.resolve(
+            'Ja, gratis parkeren kan op de parkeerplaats [1].',
+          );
+        },
+      };
+
+      const realCfg = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: true,
+      });
+      const svc = new AnswerService(tenantDb, retrieval, variantLlm, realCfg);
+      const res = await svc.answer(
+        schemaName,
+        projectId,
+        // Deliberately vague/short primary question sharing no tokens with
+        // the Parkeren doc; only the expanded variants do.
+        'iets over het gebouw',
+      );
+      expect(expandCalls).toBe(1);
+      expect(res.refused).toBe(false);
+      expect(res.citations.length).toBeGreaterThan(0);
+    });
+
+    it('expandQuery falls back to [question] when multiQueryEnabled is false, even with a real llm configured', async () => {
+      let expandCalls = 0;
+      const spyLlm: LlmProvider = {
+        complete: (messages) => {
+          const isExpand = messages.some(
+            (m) =>
+              m.role === 'system' &&
+              m.content.includes('alternatieve formulering'),
+          );
+          if (isExpand) expandCalls++;
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          return Promise.resolve('Antwoord [1].');
+        },
+      };
+      const realCfgNoMulti = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: false,
+      });
+      const svc = new AnswerService(
+        tenantDb,
+        retrieval,
+        spyLlm,
+        realCfgNoMulti,
+      );
+      await svc.answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      expect(expandCalls).toBe(0);
+    });
   });
 });

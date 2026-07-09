@@ -94,10 +94,11 @@ export class AnswerService {
     const project = await this.loadProject(schemaName, projectId);
     const threshold = project.confidenceThreshold;
 
-    const chunks = await this.retrieval.retrieve(
+    const queries = await this.expandQuery(question);
+    const chunks = await this.retrieval.retrieveMulti(
       schemaName,
       projectId,
-      question,
+      queries,
       {
         language: project.language,
       },
@@ -203,6 +204,54 @@ export class AnswerService {
     };
   }
 
+  /**
+   * Multi-query retrieval (A5): proposes up to 2 alternative phrasings of
+   * `question` (same language) via an extra LLM call, so short/vague
+   * questions get better retrieval recall when fused across queries in
+   * `RetrievalService.retrieveMulti`. Returns `[question, ...variants]`
+   * (max 3 total, primary question always first).
+   *
+   * Deliberately conservative: only runs when `multiQueryEnabled` is on AND
+   * a REAL llm is configured (`cfg.llmApiUrl` set) — with only the fake LLM
+   * (tests/dev default), this returns `[question]` so existing tests stay
+   * deterministic/single-query. ANY error, empty response, or parse failure
+   * also falls back to `[question]`; query expansion is a recall booster,
+   * never a hard dependency of the answer pipeline.
+   */
+  private async expandQuery(question: string): Promise<string[]> {
+    if (!this.cfg.multiQueryEnabled || !this.cfg.llmApiUrl) {
+      return [question];
+    }
+    try {
+      const messages: LlmMessage[] = [
+        {
+          role: 'system',
+          content:
+            'Je herschrijft een vraag van een klant naar exact twee ' +
+            'alternatieve formuleringen, in dezelfde taal, die dezelfde ' +
+            'informatiebehoefte uitdrukken maar andere woorden gebruiken. ' +
+            'Antwoord met UITSLUITEND de twee alternatieven, één per regel, ' +
+            'zonder nummering, uitleg of extra tekst.',
+        },
+        {
+          role: 'user',
+          content: `Oorspronkelijke vraag: ${sanitizeForPrompt(question)}`,
+        },
+      ];
+      const raw = await this.llm.complete(messages, { temperature: 0.3 });
+      const variants = parseQueryVariants(raw).slice(0, 2);
+      if (variants.length === 0) {
+        return [question];
+      }
+      this.metrics?.llmCallsTotal.inc({
+        provider: this.llmProviderLabel('expand'),
+      });
+      return [question, ...variants];
+    } catch {
+      return [question];
+    }
+  }
+
   /** Returns true if an independent model call judges the answer fully grounded. */
   private async selfCheck(
     answer: string,
@@ -237,9 +286,10 @@ export class AnswerService {
 
   /** Low-cardinality label for llmCallsTotal: the configured model name (or
    * 'fake' when none is configured, e.g. tests/dev), plus an optional
-   * call-kind suffix so the self-check call is distinguishable from the
-   * primary completion without adding a second label dimension. */
-  private llmProviderLabel(kind?: 'self-check'): string {
+   * call-kind suffix so the self-check and query-expansion calls are
+   * distinguishable from the primary completion without adding a second
+   * label dimension. */
+  private llmProviderLabel(kind?: 'self-check' | 'expand'): string {
     const base = this.cfg.llmModel ?? 'fake';
     return kind ? `${base}:${kind}` : base;
   }
@@ -326,6 +376,51 @@ export class AnswerService {
 /** Clamps a number into the closed interval [0, 1]. */
 export function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
+}
+
+/**
+ * Robustly parses an LLM's query-expansion response into a list of variant
+ * question strings. Handles both the requested "one per line" format and a
+ * JSON array (in case the model ignores instructions), and tolerates leading
+ * numbering/bullets (`1.`, `1)`, `-`, `*`). Blank lines and a leading/trailing
+ * quote pair are stripped. Any input that yields no usable lines returns an
+ * empty array so the caller can fall back to the single original query.
+ */
+export function parseQueryVariants(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return [];
+
+  // Try JSON array first (e.g. `["variant one", "variant two"]`).
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        const strings = parsed.filter(
+          (x): x is string => typeof x === 'string',
+        );
+        const cleaned = strings
+          .map(cleanVariantLine)
+          .filter((s) => s.length > 0);
+        if (cleaned.length > 0) return cleaned;
+      }
+    } catch {
+      // Fall through to line-based parsing.
+    }
+  }
+
+  return trimmed
+    .split('\n')
+    .map(cleanVariantLine)
+    .filter((s) => s.length > 0);
+}
+
+/** Strips leading numbering/bullets and surrounding quotes from one line. */
+function cleanVariantLine(line: string): string {
+  return line
+    .trim()
+    .replace(/^\s*(?:\d+[.)]|[-*])\s*/, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
 }
 
 /**

@@ -34,6 +34,7 @@ export async function buildTestApp(
     ingestionTimeoutMs: 60_000,
     s3Region: 'us-east-1',
     selfCheckEnabled: true,
+    multiQueryEnabled: true,
     billingEnabled: true,
     widgetCorsOrigins: [],
     ...cfgOverrides,

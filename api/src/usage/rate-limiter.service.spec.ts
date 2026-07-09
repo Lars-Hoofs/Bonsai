@@ -22,6 +22,7 @@ const cfgWithoutRedis: AppConfig = {
   ingestionTimeoutMs: 60_000,
   s3Region: 'us-east-1',
   selfCheckEnabled: true,
+  multiQueryEnabled: true,
   widgetCorsOrigins: [],
 };
 

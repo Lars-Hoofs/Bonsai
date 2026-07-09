@@ -19,4 +19,14 @@ describe('loadConfig', () => {
     const { DATABASE_URL, ...rest } = valid;
     expect(() => loadConfig(rest)).toThrow(/DATABASE_URL/);
   });
+
+  it('defaults multiQueryEnabled to true', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.multiQueryEnabled).toBe(true);
+  });
+
+  it('parses MULTI_QUERY_ENABLED=false', () => {
+    const cfg = loadConfig({ ...valid, MULTI_QUERY_ENABLED: 'false' });
+    expect(cfg.multiQueryEnabled).toBe(false);
+  });
 });
