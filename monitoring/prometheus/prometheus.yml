@@ -1,0 +1,28 @@
+# Self-hosted Prometheus scrape config for the Bonsai API.
+# Prometheus + Grafana are both open-source and free; they run on your own VPS
+# via docker-compose and cost nothing.
+#
+# AUTH: the API's GET /metrics is gated by METRICS_TOKEN. Set the SAME value in
+# the API's env (METRICS_TOKEN=...) and in `credentials` below, then restart
+# Prometheus. (Prometheus config files don't do env substitution, so the token
+# is set here directly; it only travels over the internal docker network.)
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: bonsai-api
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials: REPLACE_WITH_METRICS_TOKEN
+    static_configs:
+      - targets: ['api:3000']
+        labels:
+          service: bonsai-api
+
+  # Prometheus scraping itself (free, useful for sanity).
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

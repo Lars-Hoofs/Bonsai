@@ -19,6 +19,8 @@ services:
       OIDC_ISSUER: ${OIDC_ISSUER}
       OIDC_AUDIENCE: ${OIDC_AUDIENCE}
       OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      # Gates GET /metrics; Prometheus scrapes with the same token.
+      METRICS_TOKEN: ${METRICS_TOKEN}
     depends_on: [postgres, redis]
   caddy:
     image: caddy:2-alpine
@@ -27,6 +29,35 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
     depends_on: [api]
+
+  # --- Free, self-hosted observability (no paid service) ---
+  # Prometheus scrapes the API's /metrics; Grafana visualizes it. Both are
+  # open-source and run on your own VPS. Before starting, set METRICS_TOKEN in
+  # .env AND put the same value in monitoring/prometheus/prometheus.yml
+  # (credentials: ...). Grafana UI: http://<host>:3001 (admin / GRAFANA_ADMIN_PASSWORD).
+  prometheus:
+    image: prom/prometheus:latest
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports: ["9090:9090"]
+    depends_on: [api]
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports: ["3001:3000"]
+    depends_on: [prometheus]
+
 volumes:
   pgdata:
   caddy_data:
+  prometheus_data:
+  grafana_data:
