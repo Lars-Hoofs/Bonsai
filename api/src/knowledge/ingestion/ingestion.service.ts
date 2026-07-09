@@ -11,6 +11,7 @@ import type { EmbeddingProvider } from '../embedding/embedding-provider';
 import { csvToDocuments, RawDocument } from './csv';
 import { extractTitle, htmlToText } from './extract-text';
 import { safeFetch } from '../../common/safe-fetch';
+import { MetricsService } from '../../metrics/metrics.service';
 
 /** Fallback used when IngestionService is constructed directly (tests, the
  * BullMQ CrawlService) without an AppConfig — matches the config default. */
@@ -65,6 +66,10 @@ export class IngestionService {
     private readonly chunking: ChunkingService,
     @Inject(EMBEDDING_PROVIDER) private readonly embedder: EmbeddingProvider,
     @Optional() @Inject(APP_CONFIG) cfg?: AppConfig,
+    // Optional so tests that construct IngestionService directly (`new
+    // IngestionService(tenantDb, chunking, embedder)`, without a DI
+    // container) keep working unchanged; falls back to a no-op when absent.
+    @Optional() private readonly metrics?: MetricsService,
   ) {
     this.staleMs = cfg?.ingestionStaleMs ?? DEFAULT_STALE_MS;
   }
@@ -135,6 +140,7 @@ export class IngestionService {
           sql`UPDATE knowledge_sources SET status='processed', last_synced_at=now(), updated_at=now() WHERE id=${sourceId}`,
         );
       });
+      this.metrics?.ingestionTotal.inc({ status: 'processed' });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       this.logger.error(`Ingestion failed for source ${sourceId}: ${detail}`);
@@ -143,6 +149,7 @@ export class IngestionService {
           sql`UPDATE knowledge_sources SET status='failed', error_detail=${detail}, updated_at=now() WHERE id=${sourceId}`,
         ),
       );
+      this.metrics?.ingestionTotal.inc({ status: 'failed' });
       throw err;
     }
   }
@@ -256,6 +263,9 @@ export class IngestionService {
     }
 
     const vectors = await this.embedder.embed(chunks.map((c) => c.text));
+    this.metrics?.embeddingCallsTotal.inc({
+      provider: this.embedder.constructor.name,
+    });
     const cfg = regconfig(language);
     for (let i = 0; i < chunks.length; i++) {
       const c = chunks[i];

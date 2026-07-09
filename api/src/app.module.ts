@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { HealthController } from './health/health.controller';
+import { MetricsModule } from './metrics/metrics.module';
+import { MetricsInterceptor } from './metrics/metrics.interceptor';
 import { DbModule } from './db/db.module';
 import { TenancyModule } from './tenancy/tenancy.module';
 import { AuthModule } from './auth/auth.module';
@@ -21,6 +24,7 @@ import { StorageModule } from './storage/storage.module';
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
+    MetricsModule,
     DbModule,
     TenancyModule,
     AuthModule,
@@ -39,5 +43,6 @@ import { StorageModule } from './storage/storage.module';
     StorageModule,
   ],
   controllers: [HealthController],
+  providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],
 })
 export class AppModule {}

@@ -1,4 +1,9 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { APP_CONFIG } from '../config/config';
@@ -6,6 +11,7 @@ import type { AppConfig } from '../config/config';
 import { RetrievalService } from './retrieval.service';
 import { LLM_PROVIDER } from './llm-provider';
 import type { LlmMessage, LlmProvider } from './llm-provider';
+import { MetricsService } from '../metrics/metrics.service';
 
 export interface Citation {
   index: number;
@@ -55,6 +61,10 @@ export class AnswerService {
     private readonly retrieval: RetrievalService,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+    // Optional so tests that construct AnswerService directly (new
+    // AnswerService(tenantDb, retrieval, llm, cfg), without a DI container)
+    // keep working unchanged; falls back to a no-op below when absent.
+    @Optional() private readonly metrics?: MetricsService,
   ) {}
 
   async answer(
@@ -88,6 +98,7 @@ export class AnswerService {
 
     const messages = this.buildPrompt(question, chunks);
     const raw = await this.llm.complete(messages, { temperature: 0.1 });
+    this.metrics?.llmCallsTotal.inc({ provider: this.llmProviderLabel() });
 
     // Citation enforcement (necessary but NOT sufficient gate): the answer
     // must reference at least one provided source [n]; an uncited answer is
@@ -113,6 +124,7 @@ export class AnswerService {
       }
     }
 
+    this.metrics?.answersTotal.inc({ refused: 'false' });
     return {
       answer: raw.trim(),
       confidence,
@@ -123,6 +135,7 @@ export class AnswerService {
   }
 
   private refusal(confidence: number): AnswerResult {
+    this.metrics?.answersTotal.inc({ refused: 'true' });
     return {
       answer: REFUSAL_NL,
       confidence,
@@ -158,7 +171,19 @@ export class AnswerService {
       },
     ];
     const verdict = await this.llm.complete(messages, { temperature: 0 });
+    this.metrics?.llmCallsTotal.inc({
+      provider: this.llmProviderLabel('self-check'),
+    });
     return isSupportedVerdict(verdict);
+  }
+
+  /** Low-cardinality label for llmCallsTotal: the configured model name (or
+   * 'fake' when none is configured, e.g. tests/dev), plus an optional
+   * call-kind suffix so the self-check call is distinguishable from the
+   * primary completion without adding a second label dimension. */
+  private llmProviderLabel(kind?: 'self-check'): string {
+    const base = this.cfg.llmModel ?? 'fake';
+    return kind ? `${base}:${kind}` : base;
   }
 
   private buildPrompt(

@@ -79,6 +79,14 @@ const schema = z.object({
   // can open a socket connection at all. Empty by default (no cross-origin
   // socket access) until configured for a deployment's widget-embed domains.
   WIDGET_CORS_ORIGINS: z.string().default(''),
+  // Bearer token gating GET /metrics (self-hosted Prometheus scrape
+  // endpoint). Optional: when unset, the endpoint is only reachable outside
+  // production (NODE_ENV !== 'production') so local/dev scraping still works
+  // without extra setup; in production an unset token means the endpoint is
+  // hard-disabled (404), since the metrics payload leaks internal
+  // cardinalities (route names, tenant-scale counters) and must never be
+  // publicly world-readable.
+  METRICS_TOKEN: z.string().min(1).optional(),
 });
 
 export interface AppConfig {
@@ -113,6 +121,7 @@ export interface AppConfig {
   selfCheckEnabled: boolean;
   billingEnabled: boolean;
   widgetCorsOrigins: string[];
+  metricsToken?: string;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -159,5 +168,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     widgetCorsOrigins: d.WIDGET_CORS_ORIGINS.split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0),
+    metricsToken: d.METRICS_TOKEN,
   };
 }

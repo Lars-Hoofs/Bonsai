@@ -12,6 +12,7 @@ import { requestIdMiddleware } from '../../src/common/request-id.middleware';
 
 export async function buildTestApp(
   pool: Pool,
+  cfgOverrides: Partial<AppConfig> = {},
 ): Promise<{ app: INestApplication; idp: TestIdp }> {
   await runControlPlaneMigrations(pool);
   const idp = await makeTestIdp();
@@ -33,6 +34,7 @@ export async function buildTestApp(
     selfCheckEnabled: true,
     billingEnabled: true,
     widgetCorsOrigins: [],
+    ...cfgOverrides,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(APP_CONFIG)
@@ -52,7 +54,9 @@ export async function buildTestApp(
     }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());
-  app.setGlobalPrefix('v1', { exclude: ['health', 'docs'] });
+  app.setGlobalPrefix('v1', {
+    exclude: ['health', 'docs', 'docs-json', 'reference', 'metrics'],
+  });
   await app.init();
   return { app, idp };
 }

@@ -40,7 +40,7 @@ async function bootstrap(): Promise<void> {
   );
   app.useGlobalFilters(new HttpExceptionFilter());
   app.setGlobalPrefix('v1', {
-    exclude: ['health', 'docs', 'docs-json', 'reference'],
+    exclude: ['health', 'docs', 'docs-json', 'reference', 'metrics'],
   });
   app.enableShutdownHooks();
 

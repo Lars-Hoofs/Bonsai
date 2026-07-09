@@ -13,6 +13,7 @@ import type { AppConfig } from '../config/config';
 import type { TenantRef } from '../auth/auth.types';
 import type { ResolvedWidgetKey } from '../apikeys/apikeys.service';
 import { RateLimiterService } from './rate-limiter.service';
+import { MetricsService } from '../metrics/metrics.service';
 
 interface RateLimitedRequest {
   tenant?: TenantRef;
@@ -43,6 +44,7 @@ export class RateLimitGuard implements CanActivate {
   constructor(
     protected readonly limiter: RateLimiterService,
     @Inject(APP_CONFIG) protected readonly cfg: AppConfig,
+    protected readonly metrics: MetricsService,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -58,6 +60,7 @@ export class RateLimitGuard implements CanActivate {
       Date.now(),
     );
     if (!allowed) {
+      this.metrics.rateLimitBlockedTotal.inc();
       throw new HttpException(
         'Rate limit exceeded, please slow down.',
         HttpStatus.TOO_MANY_REQUESTS,

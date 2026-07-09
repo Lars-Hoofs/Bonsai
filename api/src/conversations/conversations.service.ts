@@ -10,6 +10,7 @@ import { TenantDbService } from '../tenancy/tenant-db.service';
 import { AnswerService } from '../rag/answer.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { UsageService } from '../usage/usage.service';
+import { MetricsService } from '../metrics/metrics.service';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
 
 export interface ConversationSummary {
@@ -55,6 +56,7 @@ export class ConversationsService {
     private readonly webhooks: WebhooksService,
     private readonly usage: UsageService,
     private readonly events: EventEmitter2,
+    private readonly metrics: MetricsService,
   ) {}
 
   private emit(
@@ -198,6 +200,7 @@ export class ConversationsService {
             VALUES (${conversationId}, 'system', 'Gesprek doorgezet naar een medewerker.')`,
       );
     });
+    this.metrics.escalationsTotal.inc();
     this.emit(
       tenantId,
       projectId,
