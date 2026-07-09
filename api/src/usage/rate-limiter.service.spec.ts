@@ -6,6 +6,8 @@ import { RateLimiterService } from './rate-limiter.service';
 // so this doubles as coverage for "tests without Redis still work".
 const cfgWithoutRedis: AppConfig = {
   databaseUrl: 'unused',
+  dbStatementTimeoutMs: 30_000,
+  dbIdleTxTimeoutMs: 30_000,
   port: 0,
   nodeEnv: 'test',
   oidcIssuer: 'https://unused.example',
@@ -14,6 +16,8 @@ const cfgWithoutRedis: AppConfig = {
   embeddingDim: 1024,
   rateLimitPerMinute: 120,
   recrawlIntervalMs: 86_400_000,
+  ingestionStaleMs: 900_000,
+  ingestionTimeoutMs: 60_000,
   s3Region: 'us-east-1',
   selfCheckEnabled: true,
   widgetCorsOrigins: [],

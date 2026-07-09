@@ -22,6 +22,14 @@ export async function runMigrations(
   const client = await pool.connect();
   const applied: string[] = [];
   try {
+    // The connection checked out here comes from the shared application pool
+    // (see db.module.ts), which sets a statement_timeout to protect normal
+    // request-path queries from hanging forever. DDL/backfills run by this
+    // migration runner can legitimately take longer than that, so this
+    // session (not the whole pool) is exempted by disabling the timeout for
+    // its own connection only — every other pooled connection keeps the
+    // configured timeout.
+    await client.query('SET statement_timeout = 0');
     await client.query(`CREATE TABLE IF NOT EXISTS public.migrations (
       track text NOT NULL, version text NOT NULL,
       applied_at timestamptz NOT NULL DEFAULT now(),
@@ -58,6 +66,14 @@ export async function runMigrations(
     }
     return applied;
   } finally {
+    // Restore the pool's configured statement_timeout on this physical
+    // connection before it goes back to the pool — pg does not reset
+    // session-level settings on release, so without this the exemption
+    // above would otherwise leak to whatever unrelated request/transaction
+    // reuses this same connection next. RESET (not `SET ... = DEFAULT`)
+    // restores the value pg set at connection startup from the Pool's
+    // `statement_timeout` option, not the Postgres server default.
+    await client.query('RESET statement_timeout').catch(() => {});
     client.release();
   }
 }

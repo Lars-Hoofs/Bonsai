@@ -19,10 +19,17 @@ export type Db = NodePgDatabase<typeof schema>;
           connectionString: cfg.databaseUrl,
           // Availability guardrails: cap runaway queries and abandoned open
           // transactions so one tenant's slow/stuck query can't starve the
-          // shared pool. Generous idle bound because ingestion legitimately
-          // awaits an external embedding call inside its transaction.
-          statement_timeout: 30_000,
-          idle_in_transaction_session_timeout: 120_000,
+          // shared pool. Configurable via DB_STATEMENT_TIMEOUT_MS /
+          // DB_IDLE_TX_TIMEOUT_MS (see config.ts) so ops can raise them for a
+          // deployment without a code change. Note: the control-plane
+          // migration runner (migrator.ts) exempts its own session from
+          // statement_timeout, since DDL can legitimately run long and must
+          // not be killed mid-migration.
+          statement_timeout: cfg.dbStatementTimeoutMs,
+          idle_in_transaction_session_timeout: cfg.dbIdleTxTimeoutMs,
+          // Bounds how long a caller waits to acquire a connection from the
+          // pool (e.g. under pool exhaustion) rather than hanging forever.
+          connectionTimeoutMillis: 10_000,
         }),
       inject: [APP_CONFIG],
     },

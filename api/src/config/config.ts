@@ -2,6 +2,15 @@ import { z } from 'zod';
 
 const schema = z.object({
   DATABASE_URL: z.string().min(1),
+  // Availability guardrails on the shared pg Pool: cap how long a single
+  // statement or an idle-in-transaction session may hold a pooled
+  // connection, so one hung query or abandoned transaction can't exhaust
+  // the pool for every tenant. The control-plane migration runner exempts
+  // its own session from statement_timeout (see migrator.ts) since DDL can
+  // legitimately run long; these defaults are for normal request-path
+  // queries/transactions only.
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  DB_IDLE_TX_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   PORT: z.coerce.number().int().positive().default(3000),
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
@@ -62,6 +71,8 @@ const schema = z.object({
 
 export interface AppConfig {
   databaseUrl: string;
+  dbStatementTimeoutMs: number;
+  dbIdleTxTimeoutMs: number;
   port: number;
   nodeEnv: 'development' | 'test' | 'production';
   oidcIssuer: string;
@@ -103,6 +114,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const d = r.data;
   return {
     databaseUrl: d.DATABASE_URL,
+    dbStatementTimeoutMs: d.DB_STATEMENT_TIMEOUT_MS,
+    dbIdleTxTimeoutMs: d.DB_IDLE_TX_TIMEOUT_MS,
     port: d.PORT,
     nodeEnv: d.NODE_ENV,
     oidcIssuer: d.OIDC_ISSUER,

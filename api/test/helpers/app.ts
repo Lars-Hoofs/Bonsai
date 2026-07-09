@@ -17,6 +17,8 @@ export async function buildTestApp(
   const idp = await makeTestIdp();
   const cfg: AppConfig = {
     databaseUrl: 'overridden',
+    dbStatementTimeoutMs: 30_000,
+    dbIdleTxTimeoutMs: 30_000,
     port: 0,
     nodeEnv: 'test',
     oidcIssuer: TEST_ISSUER,
@@ -25,6 +27,8 @@ export async function buildTestApp(
     embeddingDim: 1024,
     rateLimitPerMinute: 120,
     recrawlIntervalMs: 86_400_000,
+    ingestionStaleMs: 900_000,
+    ingestionTimeoutMs: 60_000,
     s3Region: 'us-east-1',
     selfCheckEnabled: true,
     widgetCorsOrigins: [],

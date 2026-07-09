@@ -18,6 +18,20 @@ export interface UnansweredQuestion {
   count: number;
 }
 
+// Visitor-entered free text can be arbitrarily long and may contain pasted
+// PII (names, addresses, order numbers, etc.). `unanswered` surfaces this
+// text verbatim to tenant staff for KB-improvement purposes, so the payload
+// is bounded here to reduce the PII surface returned by the endpoint — this
+// is a data-minimization measure, not a substitute for a proper DPA/consent
+// review of who may view this data.
+const UNANSWERED_QUESTION_MAX_LENGTH = 500;
+
+function truncateQuestion(text: string): string {
+  return text.length > UNANSWERED_QUESTION_MAX_LENGTH
+    ? text.slice(0, UNANSWERED_QUESTION_MAX_LENGTH)
+    : text;
+}
+
 @Injectable()
 export class AnalyticsService {
   constructor(private readonly tenantDb: TenantDbService) {}
@@ -63,6 +77,13 @@ export class AnalyticsService {
   /**
    * Visitor questions that led to a refused bot answer, grouped and ranked —
    * the backlog for improving the knowledge base.
+   *
+   * NOTE: this exposes raw visitor-entered text to tenant staff (a DPA/PII
+   * consideration — the visitor's own words may include names, order
+   * numbers, or other personal data). The returned `question` is truncated
+   * (see UNANSWERED_QUESTION_MAX_LENGTH) so a large pasted block isn't
+   * surfaced wholesale, but this is data minimization, not redaction: bound
+   * the blast radius, don't rely on it as a privacy guarantee.
    */
   async unanswered(
     schemaName: string,
@@ -85,7 +106,7 @@ export class AnalyticsService {
         LIMIT 20
       `);
       return r.rows.map((row) => ({
-        question: row.question as string,
+        question: truncateQuestion(row.question as string),
         count: row.cnt as number,
       }));
     });

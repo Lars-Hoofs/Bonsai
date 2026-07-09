@@ -17,6 +17,8 @@ describe('RateLimiterService (Redis-backed)', () => {
     redis = await new RedisContainer('redis:7-alpine').start();
     cfg = {
       databaseUrl: 'unused',
+      dbStatementTimeoutMs: 30_000,
+      dbIdleTxTimeoutMs: 30_000,
       port: 0,
       nodeEnv: 'test',
       oidcIssuer: 'https://unused.example',
@@ -26,6 +28,8 @@ describe('RateLimiterService (Redis-backed)', () => {
       rateLimitPerMinute: 120,
       redisUrl: redis.getConnectionUrl(),
       recrawlIntervalMs: 86_400_000,
+      ingestionStaleMs: 900_000,
+      ingestionTimeoutMs: 60_000,
       s3Region: 'us-east-1',
       selfCheckEnabled: true,
       widgetCorsOrigins: [],

@@ -18,6 +18,19 @@ export interface Citation {
 
 export interface AnswerResult {
   answer: string;
+  /**
+   * Top retrieval similarity score (cosine similarity, clamped to [0, 1])
+   * across the chunks retrieved for this question — NOT a post-generation
+   * grounding probability for the returned `answer`. It only measures how
+   * close the best-matching chunk is to the question, and is used solely to
+   * drive the pre-generation confidence gate (see DEFAULT_THRESHOLD /
+   * project.confidenceThreshold in `answer()`): below threshold, we refuse
+   * before ever calling the LLM. The actual grounding check on the
+   * generated answer is the separate citation-enforcement + self-check
+   * gate further down in `answer()`; this field does not reflect that
+   * check's outcome and should not be read as "how confident are we that
+   * this answer is correct/grounded".
+   */
   confidence: number;
   refused: boolean;
   citations: Citation[];
