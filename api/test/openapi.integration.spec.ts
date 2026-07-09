@@ -22,6 +22,8 @@ const cfg: AppConfig = {
   oidcJwksUrl: 'https://id.example.eu/keys',
   embeddingDim: 1024,
   rateLimitPerMinute: 120,
+  widgetConfigRatePerMin: 60,
+  conversationStartRatePerMin: 20,
   recrawlIntervalMs: 86_400_000,
   ingestionStaleMs: 900_000,
   ingestionTimeoutMs: 60_000,

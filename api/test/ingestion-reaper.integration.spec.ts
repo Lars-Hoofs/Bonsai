@@ -19,14 +19,16 @@ import { runControlPlaneMigrations } from '../src/db/run-control-plane-migration
 import * as schema from '../src/db/schema';
 import { startPg } from './helpers/pg';
 
-/** An embedder whose `embed` call never resolves — simulates a pathological,
- * arbitrarily slow embedding batch so the inline-ingestion timeout can be
- * exercised deterministically and fast, without a real network hang. */
-class NeverResolvingEmbeddingProvider implements EmbeddingProvider {
+/** An embedder whose `embed` call is far slower than the inline-ingestion
+ * timeout, so that timeout can be exercised deterministically and fast. It
+ * eventually REJECTS (rather than hanging forever) so the losing background
+ * ingestion settles and releases its pooled DB connection — otherwise the
+ * open transaction would block afterAll's pool.end() and hang the suite. */
+class SlowEmbeddingProvider implements EmbeddingProvider {
   readonly dimension = 1024;
   embed(): Promise<number[][]> {
-    return new Promise(() => {
-      /* never resolves */
+    return new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('slow embedding (test)')), 3000);
     });
   }
 }
@@ -136,10 +138,21 @@ describe('stale-processing ingestion reaper + inline timeout', () => {
   });
 
   it('bounds a pathologically slow inline ingestion with a timeout', async () => {
+    // A small, explicit timeout: this is the behavior under test (the
+    // promise must reject once `ingestionTimeoutMs` elapses), not a
+    // performance assertion. We deliberately do NOT assert an upper bound
+    // on wall-clock elapsed time here — under CI/container CPU contention
+    // the event loop can be delayed arbitrarily, and asserting "rejects
+    // within N ms" turns a correctness test into a flaky timing race. The
+    // test's own generous `testTimeout` below is the only wall-clock bound:
+    // if the timeout mechanism is broken (e.g. never fires), the test fails
+    // by hanging until that limit rather than via a tight elapsed-time
+    // assertion racing against machine load.
+    const ingestionTimeoutMs = 200;
     const ingestion = new IngestionService(
       tenantDb,
       new ChunkingService(),
-      new NeverResolvingEmbeddingProvider(),
+      new SlowEmbeddingProvider(),
       cfg(),
     );
     const audit = new AuditService(drizzle(pool, { schema }));
@@ -147,10 +160,9 @@ describe('stale-processing ingestion reaper + inline timeout', () => {
       tenantDb,
       ingestion,
       audit,
-      cfg({ ingestionTimeoutMs: 300 }), // small timeout to keep the test fast
+      cfg({ ingestionTimeoutMs }),
     );
 
-    const start = Date.now();
     await expect(
       knowledge.create(
         { id: randomUUID(), schemaName },
@@ -165,9 +177,9 @@ describe('stale-processing ingestion reaper + inline timeout', () => {
         randomUUID(),
       ),
     ).rejects.toThrow(/timed out/i);
-    const elapsed = Date.now() - start;
-    // Bounded well under the test's own 120s jest timeout; generous slack
-    // above the 300ms configured timeout for CI scheduling jitter.
-    expect(elapsed).toBeLessThan(10_000);
-  });
+    // Generous headroom over the 200ms configured timeout so the assertion
+    // never depends on a wall-clock race with CI/container contention; a
+    // genuinely broken timeout (never rejecting) still fails, just via this
+    // per-test timeout instead of a tight elapsed-time expectation.
+  }, 30_000);
 });

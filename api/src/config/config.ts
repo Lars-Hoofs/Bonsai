@@ -38,6 +38,22 @@ const schema = z.object({
   RERANK_API_KEY: z.string().optional(),
   RERANK_MODEL: z.string().optional(),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(120),
+  // Per-IP cap on the unauthenticated widget config endpoint (see
+  // WidgetPublicController): the widget key is resolved *inside* the
+  // handler, so this route is an easy target for widget-key brute-forcing.
+  // 60/min/IP is generous for a real embedded widget (config is fetched
+  // once per page load) while still bounding guesswork.
+  WIDGET_CONFIG_RATE_PER_MIN: z.coerce.number().int().positive().default(60),
+  // Per-project+IP cap on the visitor `start` conversation endpoint (see
+  // ConversationsPublicController): unbounded calls each create a
+  // conversation row (and, on the first message, LLM spend), so this needs
+  // its own tighter cap independent of the general per-tenant/per-route
+  // limit above.
+  CONVERSATION_START_RATE_PER_MIN: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(20),
   // Redis for the re-crawl queue/scheduler. When unset, scheduled re-crawl is
   // disabled (on-demand reprocess still works).
   REDIS_URL: z.string().url().optional(),
@@ -109,6 +125,8 @@ export interface AppConfig {
   rerankApiKey?: string;
   rerankModel?: string;
   rateLimitPerMinute: number;
+  widgetConfigRatePerMin: number;
+  conversationStartRatePerMin: number;
   redisUrl?: string;
   recrawlIntervalMs: number;
   ingestionStaleMs: number;
@@ -154,6 +172,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     rerankApiKey: d.RERANK_API_KEY,
     rerankModel: d.RERANK_MODEL,
     rateLimitPerMinute: d.RATE_LIMIT_PER_MINUTE,
+    widgetConfigRatePerMin: d.WIDGET_CONFIG_RATE_PER_MIN,
+    conversationStartRatePerMin: d.CONVERSATION_START_RATE_PER_MIN,
     redisUrl: d.REDIS_URL,
     recrawlIntervalMs: d.RECRAWL_INTERVAL_MS,
     ingestionStaleMs: d.INGESTION_STALE_MS,

@@ -8,14 +8,18 @@ import {
 } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
 import { ApiKeysService } from '../apikeys/apikeys.service';
-import { rateLimitGuard } from '../usage/rate-limit.guard';
+import { rateLimitGuardFromConfig } from '../usage/rate-limit.guard';
 import { WidgetService } from './widget.service';
 
 // Per-IP: this endpoint is unauthenticated until the key is resolved inside
-// the handler, so it's an easy target for widget-key brute-forcing. 60/min/IP
-// is generous for a real embedded widget (config is fetched once per page
-// load) while bounding guesswork.
-const WIDGET_CONFIG_LIMIT_PER_MINUTE = 60;
+// the handler, so it's an easy target for widget-key brute-forcing.
+// `WIDGET_CONFIG_RATE_PER_MIN` (default 60/min/IP) is generous for a real
+// embedded widget (config is fetched once per page load) while bounding
+// guesswork. Read from config (not a literal) so it's tunable via env
+// without a code change.
+const widgetConfigRateLimitGuard = rateLimitGuardFromConfig(
+  (cfg) => cfg.widgetConfigRatePerMin,
+);
 
 /**
  * Anonymous widget delivery for the embed script. Authenticated by a
@@ -31,7 +35,7 @@ export class WidgetPublicController {
 
   @Get('config')
   @Public()
-  @UseGuards(rateLimitGuard(WIDGET_CONFIG_LIMIT_PER_MINUTE))
+  @UseGuards(widgetConfigRateLimitGuard)
   async config(
     @Headers('x-bonsai-key') keyHeader: string | undefined,
     @Headers('origin') origin: string | undefined,

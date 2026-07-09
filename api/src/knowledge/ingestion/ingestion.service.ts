@@ -182,7 +182,11 @@ export class IngestionService {
       projectId: row.project_id,
       config: row.config,
       status: row.status,
-      updatedAt: row.updated_at,
+      // Coerce to a Date: raw sql`` results can surface timestamptz as a
+      // string (vs. a Date via the typed query builder), which broke
+      // isStaleProcessing's updatedAt.getTime(). new Date() is a no-op on a
+      // Date and parses the ISO string otherwise.
+      updatedAt: new Date(row.updated_at),
     };
   }
 

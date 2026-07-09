@@ -47,11 +47,21 @@ export class RateLimitGuard implements CanActivate {
     protected readonly metrics: MetricsService,
   ) {}
 
+  /**
+   * Resolves the effective per-minute limit for this request. Overridable by
+   * subclasses (e.g. `rateLimitGuardFromConfig`) that need to read a
+   * config-driven limit at request time rather than a `limit` field baked in
+   * at class-definition time.
+   */
+  protected getLimit(): number {
+    return this.limit ?? this.cfg.rateLimitPerMinute;
+  }
+
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<RateLimitedRequest>();
     const route = req.route?.path ?? 'unknown';
     const callerKey = this.callerKey(req);
-    const limit = this.limit ?? this.cfg.rateLimitPerMinute;
+    const limit = this.getLimit();
     const windowMs = this.windowMs ?? 60_000;
     const allowed = await this.limiter.allow(
       `${callerKey}:${route}`,
@@ -100,4 +110,25 @@ export function rateLimitGuard(
     protected readonly windowMs = windowMs;
   }
   return mixin(ScopedRateLimitGuard);
+}
+
+/**
+ * Builds a `RateLimitGuard` variant whose limit is read from `AppConfig` at
+ * request time (via the `cfg` this class already has injected), rather than
+ * a literal baked in at module-load time. Use this for public-route limits
+ * that must be operator-tunable via env vars (e.g. `WIDGET_CONFIG_RATE_PER_MIN`,
+ * `CONVERSATION_START_RATE_PER_MIN`) without a code change/redeploy.
+ */
+export function rateLimitGuardFromConfig(
+  selectLimit: (cfg: AppConfig) => number,
+  windowMs = 60_000,
+): Type<CanActivate> {
+  @Injectable()
+  class ConfiguredRateLimitGuard extends RateLimitGuard {
+    protected readonly windowMs = windowMs;
+    protected override getLimit(): number {
+      return selectLimit(this.cfg);
+    }
+  }
+  return mixin(ConfiguredRateLimitGuard);
 }
