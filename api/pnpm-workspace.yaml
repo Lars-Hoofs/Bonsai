@@ -1,7 +1,13 @@
-allowBuilds:
-  '@scarf/scarf': false
-  cpu-features: true
-  msgpackr-extract: false
-  protobufjs: true
-  ssh2: true
-  unrs-resolver: false
+# These transitive deps ship optional native build scripts. We do NOT build
+# them: each has a working JS fallback, none are needed at runtime, and building
+# some (cpu-features, ssh2) requires a toolchain absent from node:*-alpine.
+# Declaring them here silences pnpm v10+'s ERR_PNPM_IGNORED_BUILDS so a fresh,
+# non-interactive `pnpm install --frozen-lockfile` (the Docker build) succeeds.
+# (`allowBuilds` — used previously — is not a real pnpm field and did nothing.)
+ignoredBuiltDependencies:
+  - '@scarf/scarf'
+  - cpu-features
+  - msgpackr-extract
+  - protobufjs
+  - ssh2
+  - unrs-resolver
