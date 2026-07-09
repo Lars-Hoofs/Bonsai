@@ -65,6 +65,14 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Billing/paywall enforcement. OFF by default for now (no payment provider
+  // wired), so every tenant runs as if on a paid plan: answer usage is still
+  // METERED for analytics, but the monthly quota is never enforced (no 402).
+  // Flip to 'true' once a billing provider is connected.
+  BILLING_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   // Allowed browser origins for the real-time chat Socket.IO gateway
   // (comma-separated). The `join` handler is the real security boundary
   // (widget key + visitor secret check), but this still bounds which origins
@@ -103,6 +111,7 @@ export interface AppConfig {
   s3SecretKey?: string;
   s3Bucket?: string;
   selfCheckEnabled: boolean;
+  billingEnabled: boolean;
   widgetCorsOrigins: string[];
 }
 
@@ -146,6 +155,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     s3SecretKey: d.S3_SECRET_KEY,
     s3Bucket: d.S3_BUCKET,
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
+    billingEnabled: d.BILLING_ENABLED,
     widgetCorsOrigins: d.WIDGET_CORS_ORIGINS.split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0),

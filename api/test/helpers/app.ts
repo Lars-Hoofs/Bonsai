@@ -31,6 +31,7 @@ export async function buildTestApp(
     ingestionTimeoutMs: 60_000,
     s3Region: 'us-east-1',
     selfCheckEnabled: true,
+    billingEnabled: true,
     widgetCorsOrigins: [],
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })

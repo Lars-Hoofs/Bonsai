@@ -4,10 +4,14 @@ import { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { startPg } from './helpers/pg';
 import { runControlPlaneMigrations } from '../src/db/run-control-plane-migrations';
 import { UsageService } from '../src/usage/usage.service';
+import type { AppConfig } from '../src/config/config';
 
 interface TenantIdRow {
   id: string;
 }
+
+const billingOn = { billingEnabled: true } as AppConfig;
+const billingOff = { billingEnabled: false } as AppConfig;
 
 describe('UsageService.reserveAnswer quota race (TOCTOU)', () => {
   let container: StartedPostgreSqlContainer;
@@ -17,7 +21,7 @@ describe('UsageService.reserveAnswer quota race (TOCTOU)', () => {
   beforeAll(async () => {
     ({ container, pool } = await startPg());
     await runControlPlaneMigrations(pool);
-    usage = new UsageService(pool);
+    usage = new UsageService(pool, billingOn);
   }, 120000);
 
   afterAll(async () => {
@@ -58,6 +62,18 @@ describe('UsageService.reserveAnswer quota race (TOCTOU)', () => {
     });
 
     expect(await usedValue(tenantId)).toBe(3);
+  });
+
+  it('with billing DISABLED: meters usage but never enforces the quota (auto-paid)', async () => {
+    const noBilling = new UsageService(pool, billingOff);
+    const tenantId = await makeTenant(2); // quota 2, but billing is off
+
+    // Far more reservations than the quota -- none should throw.
+    for (let i = 0; i < 5; i++) {
+      await expect(noBilling.reserveAnswer(tenantId)).resolves.toBeUndefined();
+    }
+    // Usage is still metered (counter climbs past the quota), just not gated.
+    expect(await usedValue(tenantId)).toBe(5);
   });
 
   it('rejects a tenant with a 0 answer quota outright', async () => {

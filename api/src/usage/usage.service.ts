@@ -1,6 +1,8 @@
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PG_POOL } from '../db/db.module';
+import { APP_CONFIG } from '../config/config';
+import type { AppConfig } from '../config/config';
 
 export interface UsageView {
   period: string;
@@ -19,7 +21,10 @@ export function currentPeriod(now: Date): string {
 
 @Injectable()
 export class UsageService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+  ) {}
 
   private period(): string {
     return currentPeriod(new Date());
@@ -42,6 +47,18 @@ export class UsageService {
    */
   async reserveAnswer(tenantId: string): Promise<void> {
     const period = this.period();
+    // Billing disabled (default for now): meter usage for analytics but never
+    // enforce the quota -- every tenant behaves as if on a paid plan.
+    if (!this.cfg.billingEnabled) {
+      await this.pool.query(
+        `INSERT INTO usage_records (tenant_id, period, metric, value)
+         VALUES ($1, $2, 'answers', 1)
+         ON CONFLICT (tenant_id, period, metric)
+         DO UPDATE SET value = usage_records.value + 1`,
+        [tenantId, period],
+      );
+      return;
+    }
     const result = await this.pool.query<{ value: string }>(
       `INSERT INTO usage_records (tenant_id, period, metric, value)
        SELECT $1, $2, 'answers', 1
