@@ -109,6 +109,29 @@ describe('conversations + handover e2e', () => {
     const knownBody = known.body as ReplyBody;
     expect(knownBody.status).toBe('bot');
     expect(knownBody.reply?.refused).toBe(false);
+    expect(knownBody.reply?.citations.length).toBeGreaterThan(0);
+
+    // The stored bot message must persist its citations to
+    // message_citations (same transaction as the message insert), so a
+    // stored answer always carries its sources, not just the API response.
+    const tenantRow = await pool.query<{ schema_name: string }>(
+      'SELECT schema_name FROM tenants WHERE id = $1',
+      [tenantId],
+    );
+    const tenantSchema = tenantRow.rows[0].schema_name;
+    const citationRows = await pool.query<{
+      chunk_id: string;
+      document_id: string;
+      document_title: string;
+    }>(
+      `SELECT mc.chunk_id, mc.document_id, mc.document_title
+         FROM "${tenantSchema}".message_citations mc
+         JOIN "${tenantSchema}".messages m ON m.id = mc.message_id
+        WHERE m.conversation_id = $1 AND m.role = 'bot'`,
+      [conversationId],
+    );
+    expect(citationRows.rows.length).toBeGreaterThan(0);
+    expect(citationRows.rows[0].document_title).toBe('Openingstijden');
 
     // Out-of-KB question -> refusal + escalation suggested.
     const unknown = await request(app.getHttpServer())

@@ -25,17 +25,36 @@ export interface Citation {
 export interface AnswerResult {
   answer: string;
   /**
-   * Top retrieval similarity score (cosine similarity, clamped to [0, 1])
-   * across the chunks retrieved for this question — NOT a post-generation
-   * grounding probability for the returned `answer`. It only measures how
-   * close the best-matching chunk is to the question, and is used solely to
-   * drive the pre-generation confidence gate (see DEFAULT_THRESHOLD /
-   * project.confidenceThreshold in `answer()`): below threshold, we refuse
-   * before ever calling the LLM. The actual grounding check on the
-   * generated answer is the separate citation-enforcement + self-check
-   * gate further down in `answer()`; this field does not reflect that
-   * check's outcome and should not be read as "how confident are we that
-   * this answer is correct/grounded".
+   * Grounding-aware confidence in [0, 1] — how confident we are that
+   * `answer` is both relevant AND actually supported by the cited sources.
+   * This is intentionally NOT the same thing as the raw retrieval cosine
+   * similarity: a good retrieval hit whose answer failed citation
+   * enforcement or the groundedness self-check is reported with LOW
+   * confidence here even though the *retrieval* score was fine, because the
+   * generated answer itself was not trustworthy.
+   *
+   * Composition, by outcome:
+   *  - Gate refusal (0 chunks retrieved, or the top retrieval cosine
+   *    similarity — internally `retrievalScore` — is below the project's
+   *    confidenceThreshold): `confidence = retrievalScore`. Low, as before;
+   *    we never even called the LLM, so there is nothing to ground.
+   *  - Citation-enforcement or self-check refusal (retrieval passed the
+   *    gate, but the drafted answer was uncited or judged unsupported):
+   *    `confidence = min(retrievalScore, 0.3)`, capped low to signal "we
+   *    found plausibly relevant material but the answer wasn't grounded in
+   *    it".
+   *  - Non-refused answer (cited AND self-check passed):
+   *    `confidence = clamp01(0.45*retrievalScore + 0.35*citationCoverage + 0.20)`,
+   *    where `citationCoverage = min(1, citations.length / min(3, chunks.length))`.
+   *    The flat +0.20 baseline reflects that the answer already cleared
+   *    citation enforcement AND the independent groundedness self-check.
+   *
+   * `retrievalScore` (the raw top-cosine similarity) still independently
+   * drives the PRE-generation confidence gate itself (see
+   * DEFAULT_THRESHOLD / project.confidenceThreshold in `answer()`); that
+   * gating behavior/threshold is unchanged. This field is what callers
+   * should read as "how confident are we in this answer", not a proxy for
+   * retrieval quality alone.
    */
   confidence: number;
   refused: boolean;
@@ -83,7 +102,11 @@ export class AnswerService {
         language: project.language,
       },
     );
-    const confidence =
+    // Raw top-cosine retrieval score. Drives the PRE-generation gate below
+    // (unchanged behavior/threshold). Also feeds into the REPORTED
+    // `confidence` on the result, but is no longer reported as-is except in
+    // the refusal cases — see the AnswerResult.confidence doc comment.
+    const retrievalScore =
       chunks.length === 0
         ? 0
         : Math.max(
@@ -92,8 +115,8 @@ export class AnswerService {
           );
 
     // Confidence gate: below the (per-project) threshold we do NOT guess.
-    if (chunks.length === 0 || confidence < threshold) {
-      return this.refusal(confidence);
+    if (chunks.length === 0 || retrievalScore < threshold) {
+      return this.refusal(retrievalScore);
     }
 
     const messages = this.buildPrompt(question, chunks);
@@ -107,7 +130,7 @@ export class AnswerService {
     // actually verifies the claims, and it always runs.
     const cited = this.parseCitations(raw, chunks);
     if (cited.length === 0) {
-      return this.refusal(confidence);
+      return this.ungroundedRefusal(retrievalScore);
     }
 
     // Second-pass groundedness self-check: an independent model call decides
@@ -120,9 +143,26 @@ export class AnswerService {
     if (this.cfg.selfCheckEnabled) {
       const verdict = await this.selfCheck(raw, chunks);
       if (!verdict) {
-        return this.refusal(confidence);
+        return this.ungroundedRefusal(retrievalScore);
       }
     }
+
+    // Final "always cited" guard (defense in depth): a non-refused result
+    // must never leave this method without at least one citation, even if
+    // the gating logic above ever changes. This should be unreachable given
+    // the citation-enforcement check above, but we guarantee the invariant
+    // here regardless.
+    if (cited.length === 0) {
+      return this.ungroundedRefusal(retrievalScore);
+    }
+
+    const citationCoverage = Math.min(
+      1,
+      cited.length / Math.min(3, chunks.length),
+    );
+    const confidence = clamp01(
+      0.45 * retrievalScore + 0.35 * citationCoverage + 0.2,
+    );
 
     this.metrics?.answersTotal.inc({ refused: 'false' });
     return {
@@ -134,11 +174,29 @@ export class AnswerService {
     };
   }
 
-  private refusal(confidence: number): AnswerResult {
+  /** Gate refusal: 0 chunks retrieved, or retrievalScore below threshold —
+   * we never called the LLM, so `confidence` is just the low raw retrieval
+   * score. */
+  private refusal(retrievalScore: number): AnswerResult {
     this.metrics?.answersTotal.inc({ refused: 'true' });
     return {
       answer: REFUSAL_NL,
-      confidence,
+      confidence: retrievalScore,
+      refused: true,
+      citations: [],
+      escalationSuggested: true,
+    };
+  }
+
+  /** Citation-enforcement or self-check refusal: retrieval passed the gate
+   * (so retrievalScore may be decently high) but the generated answer was
+   * uncited or judged unsupported. Confidence is capped low to signal "found
+   * something plausibly relevant, but the answer wasn't grounded in it". */
+  private ungroundedRefusal(retrievalScore: number): AnswerResult {
+    this.metrics?.answersTotal.inc({ refused: 'true' });
+    return {
+      answer: REFUSAL_NL,
+      confidence: Math.min(retrievalScore, 0.3),
       refused: true,
       citations: [],
       escalationSuggested: true,
@@ -263,6 +321,11 @@ export class AnswerService {
       };
     });
   }
+}
+
+/** Clamps a number into the closed interval [0, 1]. */
+export function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
 }
 
 /**

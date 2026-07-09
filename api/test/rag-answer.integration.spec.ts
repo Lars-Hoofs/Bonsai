@@ -90,8 +90,25 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
     expect(res.refused).toBe(false);
     expect(res.citations.length).toBeGreaterThan(0);
     expect(res.citations[0].documentTitle).toBe('Openingstijden');
-    expect(res.confidence).toBeGreaterThan(0.1);
     expect(res.escalationSuggested).toBe(false);
+    // Grounding-aware confidence: a grounded, cited, self-check-passing
+    // answer must report at least the +0.20 baseline plus a citation
+    // coverage contribution, not the bare (possibly low) raw retrieval
+    // cosine score.
+    expect(res.confidence).toBeGreaterThanOrEqual(0.2);
+  });
+
+  it('always cites at least one source for every non-refused answer (invariant)', async () => {
+    // Exercise both the happy path and edge-ish grounded phrasing; every
+    // AnswerResult with refused === false must carry >=1 citation, even if
+    // earlier gating logic changes (defense-in-depth final guard).
+    const res = await answerWith(new FakeLlmProvider()).answer(
+      schemaName,
+      projectId,
+      'wat zijn de openingstijden van de winkel',
+    );
+    expect(res.refused).toBe(false);
+    expect(res.citations.length).toBeGreaterThan(0);
   });
 
   it('refuses honestly when the question is outside the knowledge base', async () => {
@@ -104,6 +121,11 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
     expect(res.escalationSuggested).toBe(true);
     expect(res.citations).toHaveLength(0);
     expect(res.answer).toMatch(/niet zeker/i);
+    // Gate refusal (0 chunks or below threshold): confidence stays the raw,
+    // low retrieval score — no grounding uplift for something that was never
+    // even sent to the model.
+    expect(res.confidence).toBeGreaterThanOrEqual(0);
+    expect(res.confidence).toBeLessThan(0.1);
   });
 
   it('refuses an answer that fails to cite any source (citation enforcement)', async () => {
@@ -118,6 +140,9 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
     );
     expect(res.refused).toBe(true);
     expect(res.citations).toHaveLength(0);
+    // Retrieved something (passed the gate) but wasn't grounded/cited:
+    // confidence is capped low to signal "found something but not grounded".
+    expect(res.confidence).toBeLessThanOrEqual(0.3);
   });
 
   it('refuses when the self-check judges the answer not grounded', async () => {
@@ -135,6 +160,8 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
       projectId,
       'wat zijn de openingstijden van de winkel',
     );
+    // Retrieved + cited but the independent self-check refused it: capped low.
+    expect(res.confidence).toBeLessThanOrEqual(0.3);
     expect(res.refused).toBe(true);
     expect(res.citations).toHaveLength(0);
   });

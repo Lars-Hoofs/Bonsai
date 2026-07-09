@@ -1,4 +1,4 @@
-import { isSupportedVerdict } from './answer.service';
+import { clamp01, isSupportedVerdict } from './answer.service';
 
 describe('isSupportedVerdict', () => {
   it('accepts a clean supported=true verdict', () => {
@@ -62,5 +62,23 @@ describe('isSupportedVerdict', () => {
     expect(
       isSupportedVerdict('{"supported": true, "note": "uses { and }"}'),
     ).toBe(true);
+  });
+});
+
+describe('clamp01', () => {
+  it('passes through values already in [0, 1]', () => {
+    expect(clamp01(0)).toBe(0);
+    expect(clamp01(0.5)).toBe(0.5);
+    expect(clamp01(1)).toBe(1);
+  });
+
+  it('clamps values below 0 up to 0', () => {
+    expect(clamp01(-0.1)).toBe(0);
+    expect(clamp01(-5)).toBe(0);
+  });
+
+  it('clamps values above 1 down to 1', () => {
+    expect(clamp01(1.1)).toBe(1);
+    expect(clamp01(50)).toBe(1);
   });
 });
