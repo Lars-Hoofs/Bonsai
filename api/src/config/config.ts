@@ -10,7 +10,11 @@ const schema = z.object({
   // legitimately run long; these defaults are for normal request-path
   // queries/transactions only.
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
-  DB_IDLE_TX_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  // Must exceed INGESTION_TIMEOUT_MS (60s): ingestion holds a tenant
+  // transaction open while awaiting the embedding HTTP call (the tx is "idle"
+  // during that await), so this must not fire before the ingestion timeout
+  // does its own clean failure. Guards against truly abandoned transactions.
+  DB_IDLE_TX_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   PORT: z.coerce.number().int().positive().default(3000),
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
