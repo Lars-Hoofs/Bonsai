@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: api/pnpm-lock.yaml
+
+      # --ignore-scripts: the only deps with build scripts are optional native
+      # optimizations with JS fallbacks (see api/Dockerfile), and skipping them
+      # avoids pnpm's ERR_PNPM_IGNORED_BUILDS on a fresh CI install.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build (tsc / nest build)
+        run: pnpm build
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit tests
+        run: pnpm test
+
+      # Integration tests spin up real Postgres (pgvector) etc. via
+      # Testcontainers. ubuntu-latest ships a working Docker daemon, so these
+      # run as-is. They are heavier/slower than the unit tests.
+      - name: Integration tests
+        run: pnpm test:int
