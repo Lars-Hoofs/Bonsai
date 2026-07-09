@@ -90,21 +90,27 @@ export class ProjectsService {
     id: string,
     actorUserId: string,
   ): Promise<void> {
-    const rows = await this.tenantDb.withTenant(
-      tenant.schemaName,
-      async (db) =>
-        (
-          await db.execute(
-            sql`DELETE FROM projects WHERE id = ${id} RETURNING id`,
-          )
-        ).rows,
-    );
-    if (!rows[0]) throw new NotFoundException('Project not found');
-    await this.audit.record({
-      tenantId: tenant.id,
-      actorUserId,
-      action: 'project.deleted',
-      resource: `project:${id}`,
+    // The DELETE and its audit row must commit or roll back together, so the
+    // audit write happens INSIDE this withTenant transaction, using the same
+    // `db` handle as the DELETE. Because the tenant search_path excludes
+    // `public` (see TenantDbService.withTenant), AuditService.record targets
+    // `public.audit_log` explicitly, schema-qualified, when given this `db`.
+    await this.tenantDb.withTenant(tenant.schemaName, async (db) => {
+      const rows = (
+        await db.execute(
+          sql`DELETE FROM projects WHERE id = ${id} RETURNING id`,
+        )
+      ).rows;
+      if (!rows[0]) throw new NotFoundException('Project not found');
+      await this.audit.record(
+        {
+          tenantId: tenant.id,
+          actorUserId,
+          action: 'project.deleted',
+          resource: `project:${id}`,
+        },
+        db,
+      );
     });
   }
 }

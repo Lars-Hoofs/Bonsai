@@ -1,9 +1,20 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
+import type { PgDatabase } from 'drizzle-orm/pg-core';
+import type { NodePgQueryResultHKT } from 'drizzle-orm/node-postgres';
 import { DB } from '../db/db.module';
 import type { Db } from '../db/db.module';
 import { memberships, tenants } from '../db/schema';
 import type { Role } from '../db/schema';
+
+/**
+ * Any Drizzle node-postgres executor (global DB or a transaction handle),
+ * generic over the schema so it structurally accepts both the schema-typed
+ * global `Db` and a plain `NodePgDatabase` transaction handle.
+ */
+export type DbExecutor<
+  TFullSchema extends Record<string, unknown> = Record<string, never>,
+> = PgDatabase<NodePgQueryResultHKT, TFullSchema>;
 
 export interface MembershipWithTenant {
   role: Role;
@@ -35,7 +46,13 @@ export class MembershipsService {
       : null;
   }
 
-  async add(tenantId: string, userId: string, role: Role): Promise<void> {
-    await this.db.insert(memberships).values({ tenantId, userId, role });
+  async add<TFullSchema extends Record<string, unknown>>(
+    tenantId: string,
+    userId: string,
+    role: Role,
+    tx?: DbExecutor<TFullSchema>,
+  ): Promise<void> {
+    const executor = tx ?? this.db;
+    await executor.insert(memberships).values({ tenantId, userId, role });
   }
 }

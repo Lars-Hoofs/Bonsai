@@ -59,25 +59,31 @@ export class ApiKeysService {
     actorUserId: string,
   ): Promise<{ id: string; key: string; keyPrefix: string }> {
     const { key, prefix, hash } = generateKey();
-    const [row] = await this.db
-      .insert(apiKeys)
-      .values({
-        tenantId,
-        projectId: input.projectId,
-        name: input.name,
-        keyPrefix: prefix,
-        keyHash: hash,
-        kind: input.kind,
-        scopes: input.scopes ?? [],
-        allowedOrigins: input.allowedOrigins ?? [],
-      })
-      .returning();
-    await this.audit.record({
-      tenantId,
-      actorUserId,
-      action: 'api_key.created',
-      resource: `api_key:${row.id}`,
-      metadata: { kind: input.kind },
+    const row = await this.db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(apiKeys)
+        .values({
+          tenantId,
+          projectId: input.projectId,
+          name: input.name,
+          keyPrefix: prefix,
+          keyHash: hash,
+          kind: input.kind,
+          scopes: input.scopes ?? [],
+          allowedOrigins: input.allowedOrigins ?? [],
+        })
+        .returning();
+      await this.audit.record(
+        {
+          tenantId,
+          actorUserId,
+          action: 'api_key.created',
+          resource: `api_key:${inserted.id}`,
+          metadata: { kind: input.kind },
+        },
+        tx,
+      );
+      return inserted;
     });
     return { id: row.id, key, keyPrefix: prefix };
   }
@@ -157,23 +163,28 @@ export class ApiKeysService {
     keyId: string,
     actorUserId: string,
   ): Promise<void> {
-    const result = await this.db
-      .update(apiKeys)
-      .set({ revokedAt: new Date() })
-      .where(
-        and(
-          eq(apiKeys.id, keyId),
-          eq(apiKeys.tenantId, tenantId),
-          isNull(apiKeys.revokedAt),
-        ),
-      )
-      .returning({ id: apiKeys.id });
-    if (result.length === 0) throw new NotFoundException('API key not found');
-    await this.audit.record({
-      tenantId,
-      actorUserId,
-      action: 'api_key.revoked',
-      resource: `api_key:${keyId}`,
+    await this.db.transaction(async (tx) => {
+      const result = await tx
+        .update(apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(apiKeys.id, keyId),
+            eq(apiKeys.tenantId, tenantId),
+            isNull(apiKeys.revokedAt),
+          ),
+        )
+        .returning({ id: apiKeys.id });
+      if (result.length === 0) throw new NotFoundException('API key not found');
+      await this.audit.record(
+        {
+          tenantId,
+          actorUserId,
+          action: 'api_key.revoked',
+          resource: `api_key:${keyId}`,
+        },
+        tx,
+      );
     });
   }
 }

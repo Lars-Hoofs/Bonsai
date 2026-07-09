@@ -27,14 +27,26 @@ export class TenantsService {
     input: { name: string; slug: string },
     actorUserId: string,
   ): Promise<{ id: string; name: string; slug: string }> {
+    // Schema creation + migrations (DDL) happen inside `provisioning.createTenant`
+    // and cannot share a transaction with subsequent control-plane DML — see
+    // TenantProvisioningService for the schema/tenants-row commit boundary.
+    // From here on, though, the owner-membership insert and the
+    // `tenant.created` audit row are pure DML against public tables: wrap them
+    // in one transaction so they commit (or roll back) together, closing the
+    // audit gap for everything after the tenant row itself exists.
     const t = await this.provisioning.createTenant(input);
-    await this.membershipsService.add(t.id, actorUserId, 'owner');
-    await this.audit.record({
-      tenantId: t.id,
-      actorUserId,
-      action: 'tenant.created',
-      resource: `tenant:${t.id}`,
-      metadata: { slug: t.slug },
+    await this.db.transaction(async (tx) => {
+      await this.membershipsService.add(t.id, actorUserId, 'owner', tx);
+      await this.audit.record(
+        {
+          tenantId: t.id,
+          actorUserId,
+          action: 'tenant.created',
+          resource: `tenant:${t.id}`,
+          metadata: { slug: t.slug },
+        },
+        tx,
+      );
     });
     return { id: t.id, name: input.name, slug: t.slug };
   }
@@ -74,13 +86,18 @@ export class TenantsService {
       throw new NotFoundException(
         `No user with email ${email} — they must log in once first`,
       );
-    await this.membershipsService.add(tenantId, user.id, role);
-    await this.audit.record({
-      tenantId,
-      actorUserId,
-      action: 'member.added',
-      resource: `user:${user.id}`,
-      metadata: { role },
+    await this.db.transaction(async (tx) => {
+      await this.membershipsService.add(tenantId, user.id, role, tx);
+      await this.audit.record(
+        {
+          tenantId,
+          actorUserId,
+          action: 'member.added',
+          resource: `user:${user.id}`,
+          metadata: { role },
+        },
+        tx,
+      );
     });
   }
 }
