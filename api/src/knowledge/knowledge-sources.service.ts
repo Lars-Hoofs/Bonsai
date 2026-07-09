@@ -1,10 +1,16 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { AuditService } from '../audit/audit.service';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { IngestionService } from './ingestion/ingestion.service';
+import { IngestionQueueService } from './ingestion/ingestion-queue.service';
 import { validateSourceConfig } from './source-config-validation';
 
 const DEFAULT_INGESTION_TIMEOUT_MS = 60_000;
@@ -77,9 +83,27 @@ export class KnowledgeSourcesService {
     private readonly ingestion: IngestionService,
     private readonly audit: AuditService,
     @Inject(APP_CONFIG) cfg?: AppConfig,
+    // Optional: when a Redis-backed queue is active, ingestion runs in the
+    // background instead of inline. Absent (tests/dev without Redis) -> inline.
+    @Optional() private readonly queue?: IngestionQueueService,
   ) {
     this.ingestionTimeoutMs =
       cfg?.ingestionTimeoutMs ?? DEFAULT_INGESTION_TIMEOUT_MS;
+  }
+
+  /**
+   * Background-enqueue when a Redis queue is active (request returns fast, the
+   * source stays 'pending'); otherwise ingest inline bounded by a timeout.
+   */
+  private async ingestOrEnqueue(
+    schemaName: string,
+    sourceId: string,
+  ): Promise<void> {
+    if (this.queue?.isEnabled()) {
+      await this.queue.enqueue(schemaName, sourceId);
+    } else {
+      await this.ingestBounded(schemaName, sourceId);
+    }
   }
 
   /**
@@ -126,7 +150,7 @@ export class KnowledgeSourcesService {
       );
       return (r.rows[0] as { id: string }).id;
     });
-    await this.ingestBounded(tenant.schemaName, id);
+    await this.ingestOrEnqueue(tenant.schemaName, id);
     await this.audit.record({
       tenantId: tenant.id,
       actorUserId,
@@ -172,7 +196,7 @@ export class KnowledgeSourcesService {
     id: string,
   ): Promise<SourceRow> {
     await this.get(schemaName, projectId, id); // 404 if not in this project
-    await this.ingestBounded(schemaName, id);
+    await this.ingestOrEnqueue(schemaName, id);
     return this.get(schemaName, projectId, id);
   }
 
