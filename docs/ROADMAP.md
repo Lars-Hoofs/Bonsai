@@ -32,8 +32,8 @@ Legend: [ ] todo · [x] done (commit).
 - [ ] 19 Per-source re-crawl schedule + "crawl now" + last status
 - [ ] 20 Source health overview + one-click reprocess
 - [ ] 21 Per-document enable/disable (exclude from retrieval)
-- [ ] 22 Chunk inspector (view/search/edit/delete chunks)
-- [ ] 23 Synonyms/alias dictionary per project
+- [x] 22 Chunk inspector (view/search/edit/delete chunks)
+- [x] 23 Synonyms/alias dictionary per project
 - [ ] 24 OCR for scanned PDFs via self-hosted Tesseract (Docker)
 - [ ] 25 Video/audio transcription via self-hosted Whisper (Docker)
 
@@ -45,7 +45,7 @@ Legend: [ ] todo · [x] done (commit).
 - [ ] 30 A/B testing of prompts/thresholds via eval runner
 - [ ] 31 Profanity/abuse filter on visitor input
 - [ ] 32 "Did this answer your question?" inline -> unanswered questions
-- [ ] 33 Per-project settings API (confidence, verification mode, tool-calling, business-hours...)
+- [x] 33 Per-project settings API (confidence, verification mode, tool-calling, business-hours...)
 
 ## E. Conversations & handover
 - [ ] 34 Internal notes on conversations (agent-only)
@@ -59,13 +59,13 @@ Legend: [ ] todo · [x] done (commit).
 ## F. Analytics & insight
 - [ ] 41 Unanswered-questions clustering -> KB suggestions
 - [ ] 42 Topic/intent analytics
-- [ ] 43 Cost/usage analytics per project (from metrics)
+- [x] 43 Cost/usage analytics per project (from metrics)
 - [ ] 44 Deflection rate & trends over time
 - [ ] 45 Exportable reports (CSV/JSON) + scheduled generation
 
 ## G. Team, admin, security & compliance
-- [ ] 46 Invitations & onboarding (SMTP)
+- [x] 46 Invitations & onboarding (SMTP)
 - [ ] 47 GDPR data export + right-to-erasure + retention auto-purge
-- [ ] 48 Audit-log viewer + export with filters
+- [x] 48 Audit-log viewer + export with filters
 - [ ] 49 TOTP/2FA for dashboard users
 - [ ] 50 Plan/tier limits (projects/sources/seats), self-managed
