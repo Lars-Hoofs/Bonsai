@@ -31,11 +31,58 @@ export const KNOWN_SETTINGS_KEYS = [
   'dedupEnabled',
   'retrievalWindow',
   'fallbackChain',
+  'profanityFilter',
 ] as const;
 
 export type KnownSettingsKey = (typeof KNOWN_SETTINGS_KEYS)[number];
 
 const VERIFICATION_MODES = ['self-check', 'claim-nli'] as const;
+
+const PROFANITY_ACTIONS = ['warn', 'block', 'flag'] as const;
+
+/**
+ * Validates the per-project profanity/abuse filter config (#31):
+ * `{ enabled: boolean, action: 'warn'|'block'|'flag', extraTerms?: string[],
+ * allowTerms?: string[] }`. The runtime reader (`readProfanityConfig`) is
+ * tolerant of garbage, but this write-side gate rejects malformed input so
+ * the stored shape stays well-defined.
+ */
+function assertProfanityFilter(value: unknown): void {
+  if (!isPlainObject(value)) {
+    throw new BadRequestException('Invalid profanityFilter: must be an object');
+  }
+  const { enabled, action, extraTerms, allowTerms } = value as {
+    enabled?: unknown;
+    action?: unknown;
+    extraTerms?: unknown;
+    allowTerms?: unknown;
+  };
+  if (typeof enabled !== 'boolean') {
+    throw new BadRequestException(
+      'Invalid profanityFilter.enabled: must be a boolean',
+    );
+  }
+  if (
+    typeof action !== 'string' ||
+    !(PROFANITY_ACTIONS as readonly string[]).includes(action)
+  ) {
+    throw new BadRequestException(
+      `Invalid profanityFilter.action: must be one of ${PROFANITY_ACTIONS.join(', ')}`,
+    );
+  }
+  for (const listKey of ['extraTerms', 'allowTerms'] as const) {
+    const list = listKey === 'extraTerms' ? extraTerms : allowTerms;
+    if (list === undefined) continue;
+    if (
+      !Array.isArray(list) ||
+      list.some((t) => typeof t !== 'string' || t.length === 0)
+    ) {
+      throw new BadRequestException(
+        `Invalid profanityFilter.${listKey}: must be an array of non-empty strings`,
+      );
+    }
+  }
+}
 
 const BOOLEAN_KEYS: ReadonlySet<KnownSettingsKey> = new Set([
   'selfCheckEnabled',
@@ -197,6 +244,10 @@ export function assertSettingsPatchShape(
 
   if ('businessHours' in input) {
     assertBusinessHours(input.businessHours);
+  }
+
+  if ('profanityFilter' in input) {
+    assertProfanityFilter(input.profanityFilter);
   }
 
   if ('afterHoursMessage' in input) {

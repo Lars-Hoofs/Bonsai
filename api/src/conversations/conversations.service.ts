@@ -24,6 +24,7 @@ import { PresenceService } from '../presence/presence.service';
 import { MailService } from '../mail/mail.service';
 import { StorageService } from '../storage/storage.service';
 import { sanitizeFilename } from '../storage/sanitize-filename';
+import { ModerationService } from '../moderation/moderation.service';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
@@ -36,6 +37,14 @@ import { validateAttachment } from './attachment-validation';
 const DEFAULT_HANDOVER_MESSAGE = 'Gesprek doorgezet naar een medewerker.';
 const DEFAULT_AFTER_HOURS_MESSAGE =
   'Onze medewerkers zijn nu niet bereikbaar. Laat je e-mailadres achter, dan nemen we zo snel mogelijk contact met je op.';
+// Visitor-facing replies for the profanity/abuse filter (#31). 'warn' still
+// invites the visitor to rephrase; 'block' is firmer. Both are posted as a
+// `system` message so they render in the transcript without being attributed
+// to the bot.
+const PROFANITY_WARN_MESSAGE =
+  'Houd de chat alsjeblieft netjes. Herformuleer je bericht zonder ongepast taalgebruik, dan help ik je graag verder.';
+const PROFANITY_BLOCK_MESSAGE =
+  'Dit bericht bevat ongepast taalgebruik en is niet verwerkt. Herformuleer het netjes om verder te gaan.';
 
 /**
  * Narrows the free-form `projects.settings` jsonb blob down to the two A1
@@ -152,6 +161,7 @@ export class ConversationsService {
     private readonly audit: AuditService,
     private readonly mail: MailService,
     private readonly storage: StorageService,
+    private readonly moderation: ModerationService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
@@ -194,6 +204,13 @@ export class ConversationsService {
    * escalation to a human is suggested (low-confidence refusal). When the
    * conversation is already in handover, the message is stored for the agent.
    *
+   * Profanity/abuse filter (#31): before anything else, the message is
+   * screened by `ModerationService` against the per-project heuristic filter.
+   * On a 'block' or 'warn' policy hit the message is stored (so moderators
+   * can see what was said) but the answer pipeline is skipped and a system
+   * warning is returned; on 'flag' it's recorded and answered as normal.
+   * When the filter is disabled/no match, behavior is exactly as before.
+   *
    * Frustration/sentiment auto-escalation (#24): after the bot answer is
    * stored, if the conversation is still bot-driven and
    * `frustrationAutoEscalateEnabled`, checks whether the visitor's latest
@@ -213,6 +230,7 @@ export class ConversationsService {
     visitorSecret: string,
   ): Promise<{
     status: string;
+    moderation?: { action: 'warn' | 'block' | 'flag' };
     reply?: {
       content: string;
       confidence: number;
@@ -247,6 +265,29 @@ export class ConversationsService {
 
     if (convo.status !== 'bot') {
       return { status: convo.status };
+    }
+
+    // Profanity/abuse filter — applied BEFORE the answer pipeline so an
+    // abusive message never drives (paid) LLM retrieval/answer work. Only
+    // 'block'/'warn' short-circuit; 'flag' records the event and falls
+    // through to answer as normal.
+    const screen = await this.moderation.screenVisitorMessage(
+      schemaName,
+      projectId,
+      conversationId,
+      text,
+    );
+    if (screen.action === 'block' || screen.action === 'warn') {
+      const message =
+        screen.action === 'block'
+          ? PROFANITY_BLOCK_MESSAGE
+          : PROFANITY_WARN_MESSAGE;
+      await this.insertMessage(schemaName, conversationId, {
+        role: 'system',
+        content: message,
+      });
+      this.emit(tenantId, projectId, conversationId, 'system', message);
+      return { status: 'bot', moderation: { action: screen.action } };
     }
 
     // Cost cap: reserve capacity atomically before the LLM round-trip so an
@@ -310,6 +351,11 @@ export class ConversationsService {
 
     return {
       status,
+      // 'flag' hits fall through to a normal answer; still surface that the
+      // message was flagged for moderation.
+      ...(screen.action === 'flag'
+        ? { moderation: { action: 'flag' as const } }
+        : {}),
       reply: {
         content: answer.answer,
         confidence: answer.confidence,

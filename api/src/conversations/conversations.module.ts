@@ -4,6 +4,7 @@ import { RagModule } from '../rag/rag.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
 import { ApiKeysModule } from '../apikeys/apikeys.module';
 import { PresenceModule } from '../presence/presence.module';
+import { ModerationModule } from '../moderation/moderation.module';
 import {
   AgentPresenceController,
   ConversationsController,
@@ -20,6 +21,7 @@ import { PublicWidgetGuard } from './public-widget.guard';
     WebhooksModule,
     ApiKeysModule,
     PresenceModule,
+    ModerationModule,
   ],
   controllers: [
     ConversationsController,

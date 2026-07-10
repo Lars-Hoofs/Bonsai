@@ -33,6 +33,7 @@ import { RagDebugModule } from './rag/debug/rag-debug.module';
 import { PlanLimitsModule } from './plan-limits/plan-limits.module';
 import { TwoFactorModule } from './two-factor/two-factor.module';
 import { ConversationNotesModule } from './conversation-notes/conversation-notes.module';
+import { ModerationModule } from './moderation/moderation.module';
 
 @Module({
   imports: [
@@ -67,6 +68,7 @@ import { ConversationNotesModule } from './conversation-notes/conversation-notes
     PlanLimitsModule,
     TwoFactorModule,
     ConversationNotesModule,
+    ModerationModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],
