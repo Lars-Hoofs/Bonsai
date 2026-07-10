@@ -88,6 +88,23 @@ export const agentPresence = pgTable(
   (t) => [primaryKey({ columns: [t.tenantId, t.userId] })],
 );
 
+export const invitations = pgTable('invitations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id')
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  email: text('email').notNull(),
+  role: text('role', {
+    enum: ['admin', 'editor', 'agent', 'viewer'],
+  }).notNull(),
+  token: text('token').notNull().unique(),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export const auditLog = pgTable('audit_log', {
   id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
   tenantId: uuid('tenant_id'),

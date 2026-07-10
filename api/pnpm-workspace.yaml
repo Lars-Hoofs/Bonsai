@@ -1,7 +1,10 @@
 allowBuilds:
+  '@scarf/scarf': set this to true or false
   cpu-features: set this to true or false
+  msgpackr-extract: set this to true or false
   protobufjs: set this to true or false
   ssh2: set this to true or false
+  unrs-resolver: set this to true or false
 # These transitive deps ship optional native build scripts. We do NOT build
 # them: each has a working JS fallback, none are needed at runtime, and building
 # some (cpu-features, ssh2) requires a toolchain absent from node:*-alpine.

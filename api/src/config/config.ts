@@ -197,6 +197,18 @@ const schema = z.object({
   // a real price.
   COST_PER_1K_TOKENS: z.coerce.number().nonnegative().default(0),
   EST_TOKENS_PER_ANSWER: z.coerce.number().int().positive().default(1500),
+  // Self-hosted SMTP mail (free — no paid email provider). Optional: when
+  // SMTP_HOST is unset, MailService is a no-op (logs at debug only), so
+  // dev/test never send real mail. Fill these in for a real deployment.
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
@@ -268,6 +280,12 @@ export interface AppConfig {
   frustrationRefusalStreak: number;
   costPer1kTokens: number;
   estTokensPerAnswer: number;
+  smtpHost?: string;
+  smtpPort: number;
+  smtpUser?: string;
+  smtpPass?: string;
+  smtpFrom?: string;
+  smtpSecure: boolean;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -331,5 +349,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     frustrationRefusalStreak: d.FRUSTRATION_REFUSAL_STREAK,
     costPer1kTokens: d.COST_PER_1K_TOKENS,
     estTokensPerAnswer: d.EST_TOKENS_PER_ANSWER,
+    smtpHost: d.SMTP_HOST,
+    smtpPort: d.SMTP_PORT,
+    smtpUser: d.SMTP_USER,
+    smtpPass: d.SMTP_PASS,
+    smtpFrom: d.SMTP_FROM,
+    smtpSecure: d.SMTP_SECURE,
   };
 }

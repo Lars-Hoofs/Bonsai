@@ -50,6 +50,9 @@ export async function buildTestApp(
     frustrationRefusalStreak: 2,
     costPer1kTokens: 0,
     estTokensPerAnswer: 1500,
+    // SMTP left unset: MailService stays a no-op so tests never send real mail.
+    smtpPort: 587,
+    smtpSecure: false,
     ...cfgOverrides,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
