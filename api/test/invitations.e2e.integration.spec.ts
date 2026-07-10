@@ -24,7 +24,7 @@ describe('invitations e2e', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ name: 'Acme', slug: 'acme-invites' })
       .expect(201);
-    tenantId = res.body.id as string;
+    tenantId = (res.body as { id: string }).id;
   });
 
   afterAll(async () => {
@@ -66,15 +66,17 @@ describe('invitations e2e', () => {
       role: 'editor',
       tenantId,
     });
-    expect(typeof res.body.token).toBe('string');
-    expect(res.body.token.length).toBeGreaterThan(10);
+    expect(typeof (res.body as { token: string }).token).toBe('string');
+    expect((res.body as { token: string }).token.length).toBeGreaterThan(10);
 
     const dbRow = await pool.query(
       `SELECT email, role, token FROM invitations WHERE tenant_id = $1 AND email = $2`,
       [tenantId, 'invitee@acme.eu'],
     );
     expect(dbRow.rowCount).toBe(1);
-    expect(dbRow.rows[0].token).toBe(res.body.token);
+    expect((dbRow.rows[0] as { token: string }).token).toBe(
+      (res.body as { token: string }).token,
+    );
 
     const audit = await pool.query(
       `SELECT action FROM audit_log WHERE action = 'invitation.created' AND tenant_id = $1`,
@@ -90,7 +92,7 @@ describe('invitations e2e', () => {
       expect.objectContaining({ email: 'invitee@acme.eu', role: 'editor' }),
     ]);
     // Token must never leak via the list endpoint.
-    expect(list.body[0].token).toBeUndefined();
+    expect((list.body as Array<{ token?: string }>)[0].token).toBeUndefined();
   });
 
   it('a second authenticated user accepts the invite and becomes a member', async () => {
@@ -99,7 +101,7 @@ describe('invitations e2e', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ email: 'newbie@acme.eu', role: 'agent' })
       .expect(201);
-    const token = createRes.body.token as string;
+    const token = (createRes.body as { token: string }).token;
 
     const newbieToken = await idp.sign({
       sub: 'oidc|newbie',
@@ -144,7 +146,7 @@ describe('invitations e2e', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ email: 'reuse@acme.eu', role: 'viewer' })
       .expect(201);
-    const token = createRes.body.token as string;
+    const token = (createRes.body as { token: string }).token;
 
     const reuseToken = await idp.sign({
       sub: 'oidc|reuse',
@@ -182,7 +184,7 @@ describe('invitations e2e', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ email: 'expired@acme.eu', role: 'viewer' })
       .expect(201);
-    const token = createRes.body.token as string;
+    const token = (createRes.body as { token: string }).token;
 
     // Force the invitation to be expired directly in the DB.
     await pool.query(
@@ -211,7 +213,7 @@ describe('invitations e2e', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ email: 'revoke-me@acme.eu', role: 'viewer' })
       .expect(201);
-    const invitationId = createRes.body.id as string;
+    const invitationId = (createRes.body as { id: string }).id;
 
     await request(app.getHttpServer())
       .delete(`/v1/tenants/${tenantId}/invitations/${invitationId}`)
