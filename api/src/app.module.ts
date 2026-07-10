@@ -23,6 +23,7 @@ import { CrawlModule } from './crawl/crawl.module';
 import { StorageModule } from './storage/storage.module';
 import { CommonModule } from './common/common.module';
 import { ConnectorsModule } from './connectors/connectors.module';
+import { AuditLogModule } from './audit-log/audit-log.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { ConnectorsModule } from './connectors/connectors.module';
     StorageModule,
     CommonModule,
     ConnectorsModule,
+    AuditLogModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],
