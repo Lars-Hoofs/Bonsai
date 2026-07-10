@@ -10,7 +10,13 @@ import {
 import { CurrentUser, Tenant } from '../auth/auth.types';
 import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
-import { ApplyPresetDto, ImportThemeDto, SaveThemeDto } from './dto';
+import {
+  ApplyPresetDto,
+  ImportThemeDto,
+  SaveTargetingDto,
+  SaveThemeDto,
+  SaveTriggersDto,
+} from './dto';
 import { PreviewTokenService } from './preview-token.service';
 import { WidgetService } from './widget.service';
 
@@ -122,5 +128,29 @@ export class WidgetController {
   ) {
     const token = await this.previewTokens.issue(tenant.schemaName, projectId);
     return { token };
+  }
+
+  // --- Page-targeting rules (#11) ---
+
+  @Put('targeting')
+  @RequireRole('editor')
+  saveTargeting(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: SaveTargetingDto,
+  ) {
+    return this.widget.saveTargeting(tenant.schemaName, projectId, dto);
+  }
+
+  // --- Proactive triggers (#12) ---
+
+  @Put('triggers')
+  @RequireRole('editor')
+  saveTriggers(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: SaveTriggersDto,
+  ) {
+    return this.widget.saveTriggers(tenant.schemaName, projectId, dto);
   }
 }

@@ -25,7 +25,9 @@ const widgetConfigRateLimitGuard = rateLimitGuardFromConfig(
 /**
  * Anonymous widget delivery for the embed script. Authenticated by a
  * public_widget API key (header `x-bonsai-key` or `?key=`), origin-checked
- * against the key's allowed origins. Serves the project's PUBLISHED theme only.
+ * against the key's allowed origins. Serves the project's PUBLISHED config
+ * only — theme plus the sanitized page-targeting rules (#11) and proactive
+ * triggers (#12) the embed client acts on.
  */
 @Controller('widget')
 export class WidgetPublicController {

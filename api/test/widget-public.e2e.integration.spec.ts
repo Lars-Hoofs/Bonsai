@@ -109,4 +109,72 @@ describe('public widget delivery e2e', () => {
       .query({ token: 'not-a-real-token' })
       .expect(401);
   });
+
+  it('surfaces published page-targeting rules (#11) and proactive triggers (#12) in the config', async () => {
+    // Defaults before anything is configured: permissive targeting, no triggers.
+    const before = await request(app.getHttpServer())
+      .get('/v1/widget/config')
+      .set('x-bonsai-key', widgetKey)
+      .set('Origin', ORIGIN)
+      .expect(200);
+    const beforeBody = before.body as {
+      targeting: { defaultShow: boolean; rules: unknown[] };
+      triggers: {
+        afterSeconds: number | null;
+        scrollDepth: number | null;
+        exitIntent: boolean;
+      };
+    };
+    expect(beforeBody.targeting).toEqual({ defaultShow: true, rules: [] });
+    expect(beforeBody.triggers).toEqual({
+      afterSeconds: null,
+      scrollDepth: null,
+      exitIntent: false,
+    });
+
+    const widgetBase = `/v1/tenants/${tenantId}/projects/${projectId}/widget`;
+    await request(app.getHttpServer())
+      .put(`${widgetBase}/targeting`)
+      .set(auth())
+      .send({
+        defaultShow: false,
+        rules: [{ mode: 'show', matchType: 'glob', pattern: '/pricing*' }],
+      })
+      .expect(200);
+    await request(app.getHttpServer())
+      .put(`${widgetBase}/triggers`)
+      .set(auth())
+      .send({ afterSeconds: 20, exitIntent: true })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`${widgetBase}/theme/publish`)
+      .set(auth())
+      .expect(201);
+
+    const after = await request(app.getHttpServer())
+      .get('/v1/widget/config')
+      .set('x-bonsai-key', widgetKey)
+      .set('Origin', ORIGIN)
+      .expect(200);
+    const afterBody = after.body as {
+      targeting: {
+        defaultShow: boolean;
+        rules: { mode: string; matchType: string; pattern: string }[];
+      };
+      triggers: {
+        afterSeconds: number | null;
+        scrollDepth: number | null;
+        exitIntent: boolean;
+      };
+    };
+    expect(afterBody.targeting.defaultShow).toBe(false);
+    expect(afterBody.targeting.rules).toEqual([
+      { mode: 'show', matchType: 'glob', pattern: '/pricing*' },
+    ]);
+    expect(afterBody.triggers).toEqual({
+      afterSeconds: 20,
+      scrollDepth: null,
+      exitIntent: true,
+    });
+  });
 });
