@@ -16,6 +16,11 @@ const WEBSITE_URL_MAX = 2048;
 const CSV_MAX = 1_000_000;
 const CSV_COLUMN_ARRAY_MAX = 50;
 
+export const WEBSITE_CRAWL_DEFAULT_MAX_PAGES = 50;
+export const WEBSITE_CRAWL_MAX_PAGES_CAP = 200;
+export const WEBSITE_CRAWL_DEFAULT_MAX_DEPTH = 2;
+export const WEBSITE_CRAWL_MAX_DEPTH_CAP = 5;
+
 function requireString(
   value: unknown,
   field: string,
@@ -44,6 +49,22 @@ function validateManualConfig(config: Record<string, unknown>): void {
   }
 }
 
+function requireBoundedInt(
+  value: unknown,
+  field: string,
+  max: number,
+): asserts value is number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new BadRequestException(`config.${field} must be an integer`);
+  }
+  if (value < 1) {
+    throw new BadRequestException(`config.${field} must be at least 1`);
+  }
+  if (value > max) {
+    throw new BadRequestException(`config.${field} must be at most ${max}`);
+  }
+}
+
 function validateWebsiteConfig(config: Record<string, unknown>): void {
   requireString(config.url, 'url', WEBSITE_URL_MAX);
   let parsed: URL;
@@ -56,6 +77,15 @@ function validateWebsiteConfig(config: Record<string, unknown>): void {
     throw new BadRequestException(
       'config.url must use the http or https scheme',
     );
+  }
+  if (config.crawl !== undefined && typeof config.crawl !== 'boolean') {
+    throw new BadRequestException('config.crawl must be a boolean');
+  }
+  if (config.maxPages !== undefined) {
+    requireBoundedInt(config.maxPages, 'maxPages', WEBSITE_CRAWL_MAX_PAGES_CAP);
+  }
+  if (config.maxDepth !== undefined) {
+    requireBoundedInt(config.maxDepth, 'maxDepth', WEBSITE_CRAWL_MAX_DEPTH_CAP);
   }
 }
 

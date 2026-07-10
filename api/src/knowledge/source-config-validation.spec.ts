@@ -128,6 +128,86 @@ describe('validateSourceConfig', () => {
         'config.url must be at most 2048 characters',
       );
     });
+
+    it('accepts crawl mode with valid maxPages/maxDepth', () => {
+      expect(() =>
+        validateSourceConfig('website', {
+          url: 'https://example.com',
+          crawl: true,
+          maxPages: 10,
+          maxDepth: 3,
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts crawl defaulting to false/absent', () => {
+      expect(() =>
+        validateSourceConfig('website', { url: 'https://example.com' }),
+      ).not.toThrow();
+    });
+
+    it('rejects a non-boolean crawl', () => {
+      expect(() =>
+        validateSourceConfig('website', {
+          url: 'https://example.com',
+          crawl: 'yes',
+        }),
+      ).toThrow('config.crawl must be a boolean');
+    });
+
+    it('rejects a maxPages above the cap', () => {
+      expect(() =>
+        validateSourceConfig('website', {
+          url: 'https://example.com',
+          maxPages: 201,
+        }),
+      ).toThrow('config.maxPages must be at most 200');
+    });
+
+    it('accepts maxPages exactly at the cap', () => {
+      expect(() =>
+        validateSourceConfig('website', {
+          url: 'https://example.com',
+          maxPages: 200,
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects a maxDepth above the cap', () => {
+      expect(() =>
+        validateSourceConfig('website', {
+          url: 'https://example.com',
+          maxDepth: 6,
+        }),
+      ).toThrow('config.maxDepth must be at most 5');
+    });
+
+    it('accepts maxDepth exactly at the cap', () => {
+      expect(() =>
+        validateSourceConfig('website', {
+          url: 'https://example.com',
+          maxDepth: 5,
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects a non-integer maxPages', () => {
+      expect(() =>
+        validateSourceConfig('website', {
+          url: 'https://example.com',
+          maxPages: 1.5,
+        }),
+      ).toThrow('config.maxPages must be an integer');
+    });
+
+    it('rejects maxPages below 1', () => {
+      expect(() =>
+        validateSourceConfig('website', {
+          url: 'https://example.com',
+          maxPages: 0,
+        }),
+      ).toThrow('config.maxPages must be at least 1');
+    });
   });
 
   describe('csv', () => {

@@ -11,6 +11,13 @@ import type { EmbeddingProvider } from '../embedding/embedding-provider';
 import { csvToDocuments, RawDocument } from './csv';
 import { extractTitle, htmlToText } from './extract-text';
 import { safeFetch } from '../../common/safe-fetch';
+import { crawlSite } from './site-crawler';
+import {
+  WEBSITE_CRAWL_DEFAULT_MAX_DEPTH,
+  WEBSITE_CRAWL_DEFAULT_MAX_PAGES,
+  WEBSITE_CRAWL_MAX_DEPTH_CAP,
+  WEBSITE_CRAWL_MAX_PAGES_CAP,
+} from '../source-config-validation';
 import { MetricsService } from '../../metrics/metrics.service';
 
 /** Fallback used when IngestionService is constructed directly (tests, the
@@ -53,6 +60,24 @@ function toVectorLiteral(vec: number[]): string {
 
 function docHash(raw: { title: string; body: string }): string {
   return createHash('sha256').update(`${raw.title}\n${raw.body}`).digest('hex');
+}
+
+/** Fetches a single page's HTML via the SSRF-guarded `safeFetch`. Throws a
+ * generic error on any failure (network error, non-2xx, blocked URL): the
+ * raw error must not leak to the tenant, or it becomes an oracle for
+ * scanning our internal network. Used for both the single-page website path
+ * and as the underlying page-fetcher for `crawlSite`. */
+async function fetchPageBody(url: string): Promise<string> {
+  let res: { status: number; body: string };
+  try {
+    res = await safeFetch(url, { maxBytes: 5_000_000 });
+  } catch {
+    throw new Error('Kon de opgegeven URL niet ophalen');
+  }
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error('Kon de opgegeven URL niet ophalen');
+  }
+  return res.body;
 }
 
 @Injectable()
@@ -106,6 +131,19 @@ export class IngestionService {
           sql`UPDATE knowledge_sources SET status='processing', error_detail=NULL, updated_at=now() WHERE id=${sourceId}`,
         );
         const raws = await this.extract(src.type, src.config);
+
+        if (src.type === 'website') {
+          // Website sources (single-page or multi-page crawl) are keyed by
+          // origin_url and change-detected per page: unchanged pages are
+          // left untouched (no re-chunk/re-embed), changed pages get their
+          // chunks replaced, new pages are inserted, and pages no longer
+          // present in this crawl are deleted.
+          await this.upsertWebsiteDocuments(db, sourceId, src.projectId, raws);
+          await db.execute(
+            sql`UPDATE knowledge_sources SET status='processed', last_synced_at=now(), updated_at=now() WHERE id=${sourceId}`,
+          );
+          return;
+        }
 
         // Change detection: if the extracted content hashes to exactly the same
         // set as what is already stored, nothing changed — skip the (expensive)
@@ -218,19 +256,37 @@ export class IngestionService {
     if (type === 'website') {
       const url = str(config.url);
       if (!url) throw new Error('website source requires a url');
-      let res: { status: number; body: string };
-      try {
-        res = await safeFetch(url, { maxBytes: 5_000_000 });
-      } catch {
-        // Generic message: the raw error (connection refused, DNS failure,
-        // "Blocked URL", etc.) must not leak to the tenant, or it becomes an
-        // oracle for scanning our internal network.
-        throw new Error('Kon de opgegeven URL niet ophalen');
+
+      if (config.crawl === true) {
+        const maxPages = Math.min(
+          typeof config.maxPages === 'number'
+            ? config.maxPages
+            : WEBSITE_CRAWL_DEFAULT_MAX_PAGES,
+          WEBSITE_CRAWL_MAX_PAGES_CAP,
+        );
+        const maxDepth = Math.min(
+          typeof config.maxDepth === 'number'
+            ? config.maxDepth
+            : WEBSITE_CRAWL_DEFAULT_MAX_DEPTH,
+          WEBSITE_CRAWL_MAX_DEPTH_CAP,
+        );
+        let pages: { url: string; html: string }[];
+        try {
+          pages = await crawlSite(url, { maxPages, maxDepth }, (pageUrl) =>
+            fetchPageBody(pageUrl),
+          );
+        } catch {
+          // Same generic-message rationale as the single-page path below.
+          throw new Error('Kon de opgegeven URL niet ophalen');
+        }
+        return pages.map((p) => ({
+          title: extractTitle(p.html, p.url),
+          body: htmlToText(p.html),
+          originUrl: p.url,
+        }));
       }
-      if (res.status < 200 || res.status >= 300) {
-        throw new Error('Kon de opgegeven URL niet ophalen');
-      }
-      const html = res.body;
+
+      const html = await fetchPageBody(url);
       return [
         {
           title: extractTitle(html, url),
@@ -257,7 +313,20 @@ export class IngestionService {
           RETURNING id`,
     );
     const documentId = (inserted.rows[0] as { id: string }).id;
+    await this.writeChunksForDocument(db, documentId, projectId, raw, language);
+  }
 
+  /** Chunks, embeds, and inserts `raw.body` under an already-created
+   * `documentId`, then marks the document processed. Shared by fresh
+   * document inserts and by re-chunking a changed page under its existing
+   * document id (the per-page website upsert path). */
+  private async writeChunksForDocument(
+    db: NodePgDatabase,
+    documentId: string,
+    projectId: string,
+    raw: RawDocument,
+    language: string,
+  ): Promise<void> {
     const chunks = this.chunking.chunk(raw.body);
     if (chunks.length === 0) {
       await db.execute(
@@ -283,5 +352,88 @@ export class IngestionService {
     await db.execute(
       sql`UPDATE documents SET status='processed', updated_at=now() WHERE id=${documentId}`,
     );
+  }
+
+  /**
+   * Per-page upsert for website sources, keyed by (source_id, origin_url):
+   *  - same content_hash as stored -> left untouched (no re-chunk/re-embed).
+   *  - different hash -> chunks replaced, content_hash updated (re-embed).
+   *  - not previously present -> inserted (and embedded).
+   *  - previously present but absent from this crawl -> document (and its
+   *    chunks, via ON DELETE CASCADE) deleted.
+   *
+   * This is what makes a re-crawl only re-embed changed/new pages instead of
+   * the delete-all-then-reinsert behavior used for other source types.
+   */
+  private async upsertWebsiteDocuments(
+    db: NodePgDatabase,
+    sourceId: string,
+    projectId: string,
+    raws: RawDocument[],
+  ): Promise<void> {
+    const existing = await db.execute(
+      sql`SELECT id, origin_url, content_hash FROM documents WHERE source_id=${sourceId}`,
+    );
+    const existingByUrl = new Map(
+      (
+        existing.rows as {
+          id: string;
+          origin_url: string | null;
+          content_hash: string;
+        }[]
+      )
+        .filter((r) => r.origin_url !== null)
+        .map((r) => [r.origin_url as string, r]),
+    );
+
+    const seenUrls = new Set<string>();
+    for (const raw of raws) {
+      const url = raw.originUrl;
+      // Should not happen (every website RawDocument carries an originUrl),
+      // but skip defensively rather than upserting under a null key that
+      // would collide with every other null-origin_url row.
+      if (!url) continue;
+      seenUrls.add(url);
+
+      const language = raw.language ?? 'nl';
+      const contentHash = docHash(raw);
+      const prior = existingByUrl.get(url);
+
+      if (prior && prior.content_hash === contentHash) {
+        continue; // Unchanged — skip re-chunk/re-embed entirely.
+      }
+
+      if (prior) {
+        // Changed — replace this page's chunks and refresh its hash, but
+        // keep the same document id/row (so unrelated references, e.g. in
+        // chat citations, keep working).
+        await db.execute(sql`DELETE FROM chunks WHERE document_id=${prior.id}`);
+        await db.execute(
+          sql`UPDATE documents SET title=${raw.title}, content_hash=${contentHash}, language=${language}, status='processing', updated_at=now() WHERE id=${prior.id}`,
+        );
+        await this.writeChunksForDocument(
+          db,
+          prior.id,
+          projectId,
+          raw,
+          language,
+        );
+        continue;
+      }
+
+      // New page — insert and embed.
+      await this.ingestDocument(db, sourceId, projectId, raw);
+    }
+
+    // Pages no longer present in this crawl: delete their document (chunks
+    // cascade via the FK).
+    const staleUrls = [...existingByUrl.keys()].filter(
+      (url) => !seenUrls.has(url),
+    );
+    for (const url of staleUrls) {
+      const stale = existingByUrl.get(url);
+      if (!stale) continue;
+      await db.execute(sql`DELETE FROM documents WHERE id=${stale.id}`);
+    }
   }
 }
