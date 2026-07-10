@@ -36,6 +36,7 @@ import { TwoFactorModule } from './two-factor/two-factor.module';
 import { ConversationNotesModule } from './conversation-notes/conversation-notes.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { UnansweredQuestionsModule } from './unanswered-questions/unanswered-questions.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -73,6 +74,7 @@ import { UnansweredQuestionsModule } from './unanswered-questions/unanswered-que
     ConversationNotesModule,
     ModerationModule,
     UnansweredQuestionsModule,
+    NotificationsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],
