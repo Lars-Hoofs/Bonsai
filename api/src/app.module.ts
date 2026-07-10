@@ -31,6 +31,7 @@ import { InvitationsModule } from './invitations/invitations.module';
 import { RagDebugModule } from './rag/debug/rag-debug.module';
 import { PlanLimitsModule } from './plan-limits/plan-limits.module';
 import { TwoFactorModule } from './two-factor/two-factor.module';
+import { ConversationNotesModule } from './conversation-notes/conversation-notes.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { TwoFactorModule } from './two-factor/two-factor.module';
     RagDebugModule,
     PlanLimitsModule,
     TwoFactorModule,
+    ConversationNotesModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],
