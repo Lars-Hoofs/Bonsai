@@ -19,10 +19,17 @@ import {
   WEBSITE_CRAWL_MAX_PAGES_CAP,
 } from '../source-config-validation';
 import { MetricsService } from '../../metrics/metrics.service';
+import { createDeduper } from './dedup';
+import type { Deduper } from './dedup';
 
 /** Fallback used when IngestionService is constructed directly (tests, the
  * BullMQ CrawlService) without an AppConfig — matches the config default. */
 const DEFAULT_STALE_MS = 900_000;
+
+/** Fallbacks matching the config defaults, used when IngestionService is
+ * constructed directly without an AppConfig (see DEFAULT_STALE_MS above). */
+const DEFAULT_DEDUP_ENABLED = true;
+const DEFAULT_NEAR_DUP_THRESHOLD = 0.97;
 
 /** A source is considered abandoned (crashed mid-ingestion, never reached the
  * catch block) if it has sat in 'processing' longer than this. */
@@ -85,6 +92,8 @@ export class IngestionService {
   private readonly logger = new Logger(IngestionService.name);
 
   private readonly staleMs: number;
+  private readonly dedupEnabled: boolean;
+  private readonly nearDupThreshold: number;
 
   constructor(
     private readonly tenantDb: TenantDbService,
@@ -97,6 +106,8 @@ export class IngestionService {
     @Optional() private readonly metrics?: MetricsService,
   ) {
     this.staleMs = cfg?.ingestionStaleMs ?? DEFAULT_STALE_MS;
+    this.dedupEnabled = cfg?.dedupEnabled ?? DEFAULT_DEDUP_ENABLED;
+    this.nearDupThreshold = cfg?.nearDupThreshold ?? DEFAULT_NEAR_DUP_THRESHOLD;
   }
 
   /**
@@ -131,6 +142,14 @@ export class IngestionService {
           sql`UPDATE knowledge_sources SET status='processing', error_detail=NULL, updated_at=now() WHERE id=${sourceId}`,
         );
         const raws = await this.extract(src.type, src.config);
+        // Scoped to this single source-ingestion run: accumulates KEPT
+        // chunks across ALL documents of the source (so boilerplate
+        // repeated *across* documents/pages — e.g. crawled nav/footer text —
+        // is deduped too, not just within one document). A fresh instance is
+        // created on every ingestSource call, never shared across sources or
+        // runs. `undefined` when dedup is disabled, so downstream code takes
+        // the no-op path.
+        const deduper = this.dedupEnabled ? createDeduper() : undefined;
 
         if (src.type === 'website') {
           // Website sources (single-page or multi-page crawl) are keyed by
@@ -138,7 +157,13 @@ export class IngestionService {
           // left untouched (no re-chunk/re-embed), changed pages get their
           // chunks replaced, new pages are inserted, and pages no longer
           // present in this crawl are deleted.
-          await this.upsertWebsiteDocuments(db, sourceId, src.projectId, raws);
+          await this.upsertWebsiteDocuments(
+            db,
+            sourceId,
+            src.projectId,
+            raws,
+            deduper,
+          );
           await db.execute(
             sql`UPDATE knowledge_sources SET status='processed', last_synced_at=now(), updated_at=now() WHERE id=${sourceId}`,
           );
@@ -172,7 +197,7 @@ export class IngestionService {
           sql`DELETE FROM documents WHERE source_id=${sourceId}`,
         );
         for (const raw of raws) {
-          await this.ingestDocument(db, sourceId, src.projectId, raw);
+          await this.ingestDocument(db, sourceId, src.projectId, raw, deduper);
         }
         await db.execute(
           sql`UPDATE knowledge_sources SET status='processed', last_synced_at=now(), updated_at=now() WHERE id=${sourceId}`,
@@ -303,6 +328,7 @@ export class IngestionService {
     sourceId: string,
     projectId: string,
     raw: RawDocument,
+    deduper?: Deduper,
   ): Promise<void> {
     const language = raw.language ?? 'nl';
     const contentHash = docHash(raw);
@@ -313,19 +339,36 @@ export class IngestionService {
           RETURNING id`,
     );
     const documentId = (inserted.rows[0] as { id: string }).id;
-    await this.writeChunksForDocument(db, documentId, projectId, raw, language);
+    await this.writeChunksForDocument(
+      db,
+      documentId,
+      projectId,
+      raw,
+      language,
+      deduper,
+    );
   }
 
   /** Chunks, embeds, and inserts `raw.body` under an already-created
    * `documentId`, then marks the document processed. Shared by fresh
    * document inserts and by re-chunking a changed page under its existing
-   * document id (the per-page website upsert path). */
+   * document id (the per-page website upsert path).
+   *
+   * When `deduper` is provided (dedup enabled), each embedded chunk is
+   * passed through `deduper.shouldKeep` and only kept chunks are inserted —
+   * dropping exact duplicates (identical normalized text) and near-duplicates
+   * (embedding cosine >= threshold) against anything already kept earlier in
+   * this same source-ingestion run, including chunks from other documents.
+   * If every chunk of this document is dropped, the document row is still
+   * created/updated and marked 'processed' with zero chunks, rather than
+   * left dangling or causing an error. */
   private async writeChunksForDocument(
     db: NodePgDatabase,
     documentId: string,
     projectId: string,
     raw: RawDocument,
     language: string,
+    deduper?: Deduper,
   ): Promise<void> {
     const chunks = this.chunking.chunk(raw.body);
     if (chunks.length === 0) {
@@ -342,11 +385,15 @@ export class IngestionService {
     const cfg = regconfig(language);
     for (let i = 0; i < chunks.length; i++) {
       const c = chunks[i];
-      const vec = toVectorLiteral(vectors[i]);
+      const vec = vectors[i];
+      if (deduper && !deduper.shouldKeep(c.text, vec, this.nearDupThreshold)) {
+        continue;
+      }
+      const vecLiteral = toVectorLiteral(vec);
       await db.execute(
         sql`INSERT INTO chunks (document_id, project_id, ordinal, text, token_count, section, embedding, tsv)
             VALUES (${documentId}, ${projectId}, ${c.ordinal}, ${c.text}, ${c.tokenCount}, ${c.section ?? null},
-                    ${vec}::shared.vector, to_tsvector(${cfg}::regconfig, ${c.text}))`,
+                    ${vecLiteral}::shared.vector, to_tsvector(${cfg}::regconfig, ${c.text}))`,
       );
     }
     await db.execute(
@@ -370,6 +417,7 @@ export class IngestionService {
     sourceId: string,
     projectId: string,
     raws: RawDocument[],
+    deduper?: Deduper,
   ): Promise<void> {
     const existing = await db.execute(
       sql`SELECT id, origin_url, content_hash FROM documents WHERE source_id=${sourceId}`,
@@ -417,12 +465,13 @@ export class IngestionService {
           projectId,
           raw,
           language,
+          deduper,
         );
         continue;
       }
 
       // New page — insert and embed.
-      await this.ingestDocument(db, sourceId, projectId, raw);
+      await this.ingestDocument(db, sourceId, projectId, raw, deduper);
     }
 
     // Pages no longer present in this crawl: delete their document (chunks

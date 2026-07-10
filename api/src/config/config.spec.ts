@@ -84,4 +84,36 @@ describe('loadConfig', () => {
       /ENCRYPTION_KEY must decode.*32 bytes/,
     );
   });
+
+  it('defaults dedupEnabled to true', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.dedupEnabled).toBe(true);
+  });
+
+  it('parses DEDUP_ENABLED=false', () => {
+    const cfg = loadConfig({ ...valid, DEDUP_ENABLED: 'false' });
+    expect(cfg.dedupEnabled).toBe(false);
+  });
+
+  it('defaults nearDupThreshold to 0.97', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.nearDupThreshold).toBe(0.97);
+  });
+
+  it('parses NEAR_DUP_THRESHOLD', () => {
+    const cfg = loadConfig({ ...valid, NEAR_DUP_THRESHOLD: '0.9' });
+    expect(cfg.nearDupThreshold).toBe(0.9);
+  });
+
+  it('rejects a NEAR_DUP_THRESHOLD of 0', () => {
+    expect(() => loadConfig({ ...valid, NEAR_DUP_THRESHOLD: '0' })).toThrow(
+      /NEAR_DUP_THRESHOLD/,
+    );
+  });
+
+  it('rejects a NEAR_DUP_THRESHOLD above 1', () => {
+    expect(() => loadConfig({ ...valid, NEAR_DUP_THRESHOLD: '1.5' })).toThrow(
+      /NEAR_DUP_THRESHOLD/,
+    );
+  });
 });

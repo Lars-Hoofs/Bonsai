@@ -165,6 +165,17 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Near-duplicate chunk detection at ingest (#16): drops chunks whose
+  // normalized text exactly matches an already-kept chunk, or whose
+  // embedding cosine similarity to an already-kept chunk (within the same
+  // source ingestion run) is >= NEAR_DUP_THRESHOLD. Keeps retrieval from
+  // being polluted by repeated boilerplate (e.g. crawled nav/footer text)
+  // and cuts embedding cost. On by default.
+  DEDUP_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  NEAR_DUP_THRESHOLD: z.coerce.number().gt(0).lte(1).default(0.97),
 });
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
@@ -230,6 +241,8 @@ export interface AppConfig {
   followupSuggestionsEnabled: boolean;
   encryptionKey?: Buffer;
   toolCallingEnabled: boolean;
+  dedupEnabled: boolean;
+  nearDupThreshold: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -287,5 +300,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     followupSuggestionsEnabled: d.FOLLOWUP_SUGGESTIONS_ENABLED,
     encryptionKey: decodeEncryptionKey(d.ENCRYPTION_KEY),
     toolCallingEnabled: d.TOOL_CALLING_ENABLED,
+    dedupEnabled: d.DEDUP_ENABLED,
+    nearDupThreshold: d.NEAR_DUP_THRESHOLD,
   };
 }
