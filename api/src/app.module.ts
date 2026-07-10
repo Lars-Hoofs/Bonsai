@@ -26,6 +26,7 @@ import { ConnectorsModule } from './connectors/connectors.module';
 import { AuditLogModule } from './audit-log/audit-log.module';
 import { ChunksModule } from './chunks/chunks.module';
 import { SynonymsModule } from './synonyms/synonyms.module';
+import { AnswerTemplatesModule } from './answer-templates/answer-templates.module';
 import { MailModule } from './mail/mail.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { RagDebugModule } from './rag/debug/rag-debug.module';
@@ -59,6 +60,7 @@ import { ConversationNotesModule } from './conversation-notes/conversation-notes
     AuditLogModule,
     ChunksModule,
     SynonymsModule,
+    AnswerTemplatesModule,
     MailModule,
     InvitationsModule,
     RagDebugModule,

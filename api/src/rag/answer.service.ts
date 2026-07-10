@@ -18,6 +18,8 @@ import { ConnectorToolService } from '../connectors/connector-tool.service';
 import type { ToolSource } from '../connectors/connector-tool.service';
 import { resolveFallbackChain } from './fallback-chain';
 import type { ResolvedFallbackChain } from './fallback-chain';
+import { AnswerTemplatesService } from '../answer-templates/answer-templates.service';
+import type { AnswerTemplate } from '../answer-templates/answer-templates.service';
 
 /**
  * One prior turn of a conversation, passed into `answer()` to enable
@@ -148,6 +150,16 @@ const CONDENSE_SYSTEM_TAG = 'BONSAI_CONDENSE_V1';
  * distinguishable from a real KB chunk in logs/debugging. */
 const TOOL_SOURCE_ID_PREFIX = 'connector:';
 
+/** Sentinel documentId/chunkId prefix for the synthetic citation attached to
+ * a canned answer-template answer (#28), so it persists through the same
+ * citation path as any other source while staying visibly distinguishable
+ * from a real KB chunk in logs/stored message citations. */
+const TEMPLATE_SOURCE_ID_PREFIX = 'template:';
+
+/** Default attribution title used for a canned answer-template citation when
+ * the editor left the template's `attribution` blank. */
+const TEMPLATE_DEFAULT_ATTRIBUTION = 'Antwoordsjabloon';
+
 @Injectable()
 export class AnswerService {
   constructor(
@@ -166,6 +178,11 @@ export class AnswerService {
     // container) keep working unchanged: no tool service -> no tool calls,
     // ever (see `attemptToolCall`), regardless of `cfg.toolCallingEnabled`.
     @Optional() private readonly tool?: ConnectorToolService,
+    // Optional so tests that construct AnswerService directly (without a DI
+    // container) keep working unchanged: no templates service -> no canned
+    // answers, ever (see `matchTemplate`), regardless of
+    // `cfg.answerTemplatesEnabled`.
+    @Optional() private readonly templates?: AnswerTemplatesService,
   ) {}
 
   async answer(
@@ -178,6 +195,19 @@ export class AnswerService {
     // unchanged. Only the conversation flow passes real history.
     history: ConversationTurn[] = [],
   ): Promise<AnswerResult> {
+    // Answer templates / canned answers per intent (#28): before any
+    // retrieval/LLM work, give an editor-authored canned answer a chance to
+    // short-circuit the pipeline. Only engages when the feature is enabled AND
+    // an AnswerTemplatesService was actually injected (absent when a test
+    // constructs AnswerService directly without a DI container), so existing
+    // direct-construction tests are unaffected. A match returns immediately
+    // with the canned answer + attribution; no match falls straight through to
+    // the normal pipeline below.
+    const canned = await this.matchTemplate(schemaName, projectId, question);
+    if (canned) {
+      return canned;
+    }
+
     const project = await this.loadProject(schemaName, projectId);
     const threshold = project.confidenceThreshold;
 
@@ -409,6 +439,77 @@ export class AnswerService {
       // See `refusal`: escalation is only suggested when the chain's final
       // `human` stage is configured (default: it is).
       escalationSuggested: chain.usesHuman,
+      suggestedQuestions: [],
+    };
+  }
+
+  /**
+   * Answer templates / canned answers per intent (#28): if the feature is
+   * enabled AND an AnswerTemplatesService is available, looks for the first
+   * active, short-circuiting template whose trigger (keyword or intent phrase)
+   * matches the incoming question, and if found builds a canned AnswerResult
+   * from it. Returns null when the feature is off, no service is injected, or
+   * no template matches — so the caller proceeds with normal retrieval.
+   *
+   * Deliberately conservative, mirroring `attemptToolCall`/`expandQuery`: any
+   * error while looking up templates degrades to "no canned answer" rather
+   * than failing the answer — canned answers are an additive optimization, not
+   * a hard dependency.
+   */
+  private async matchTemplate(
+    schemaName: string,
+    projectId: string,
+    question: string,
+  ): Promise<AnswerResult | null> {
+    if (!this.cfg.answerTemplatesEnabled || !this.templates) {
+      return null;
+    }
+    let template: AnswerTemplate | null;
+    try {
+      template = await this.templates.matchShortCircuit(
+        schemaName,
+        projectId,
+        question,
+      );
+    } catch {
+      return null;
+    }
+    if (!template) return null;
+    this.metrics?.answersTotal.inc({ refused: 'false' });
+    return this.cannedAnswer(template);
+  }
+
+  /**
+   * Builds a non-refused AnswerResult from a matched answer template. The
+   * canned answer carries a single synthetic citation (sentinel
+   * `template:<id>`, never confusable with a real KB uuid) whose title is the
+   * template's `attribution` (or a default) so the answer is properly
+   * attributed and flows through the existing citation-persistence path
+   * (message_citations) unchanged. Confidence is a fixed high value: an
+   * editor authored this exact answer for this exact trigger, so it is fully
+   * "grounded" by definition — there is nothing to retrieve or self-check.
+   */
+  private cannedAnswer(template: AnswerTemplate): AnswerResult {
+    const sentinelId = `${TEMPLATE_SOURCE_ID_PREFIX}${template.id}`;
+    const title =
+      template.attribution && template.attribution.trim().length > 0
+        ? template.attribution.trim()
+        : TEMPLATE_DEFAULT_ATTRIBUTION;
+    return {
+      answer: template.answer.trim(),
+      confidence: 1,
+      refused: false,
+      citations: [
+        {
+          index: 1,
+          chunkId: sentinelId,
+          documentId: sentinelId,
+          documentTitle: title,
+          sourceId: template.id,
+          originUrl: null,
+        },
+      ],
+      escalationSuggested: false,
       suggestedQuestions: [],
     };
   }

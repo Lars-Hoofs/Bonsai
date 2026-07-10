@@ -73,6 +73,7 @@ export async function buildTestApp(
     nearDupThreshold: 0.97,
     frustrationAutoEscalateEnabled: true,
     frustrationRefusalStreak: 2,
+    answerTemplatesEnabled: true,
     costPer1kTokens: 0,
     estTokensPerAnswer: 1500,
     // Whisper transcription off by default in tests (audio/video uploads
