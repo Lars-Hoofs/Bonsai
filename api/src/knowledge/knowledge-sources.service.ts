@@ -161,6 +161,13 @@ export class KnowledgeSourcesService {
     return this.get(tenant.schemaName, projectId, id);
   }
 
+  /** Maps a raw `knowledge_sources` row to the public `SourceRow` shape.
+   * Exposed so sibling services (e.g. the article editor) can reuse the same
+   * base mapping without duplicating it. */
+  mapSourceRow(row: Record<string, unknown>): SourceRow {
+    return mapSource(row);
+  }
+
   async list(schemaName: string, projectId: string): Promise<SourceRow[]> {
     return this.tenantDb.withTenant(schemaName, async (db) => {
       const r = await db.execute(

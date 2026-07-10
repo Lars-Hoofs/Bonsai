@@ -65,6 +65,24 @@ function requireBoundedInt(
   }
 }
 
+const ARTICLE_BODY_MAX = 400_000;
+
+function validateArticleConfig(config: Record<string, unknown>): void {
+  // Article configs are assembled server-side (see ArticlesService), so this
+  // is a defensive bound rather than raw client-input validation: the indexed
+  // `body` must be a bounded string and the title present.
+  requireString(config.title, 'title', MANUAL_TITLE_MAX);
+  requireString(config.body, 'body', ARTICLE_BODY_MAX);
+  if (config.language != null) {
+    requireString(config.language, 'language', LANGUAGE_MAX);
+    if (config.language.length < LANGUAGE_MIN) {
+      throw new BadRequestException(
+        `config.language must be at least ${LANGUAGE_MIN} characters`,
+      );
+    }
+  }
+}
+
 function validateWebsiteConfig(config: Record<string, unknown>): void {
   requireString(config.url, 'url', WEBSITE_URL_MAX);
   let parsed: URL;
@@ -135,6 +153,10 @@ export function validateSourceConfig(
 ): void {
   if (type === 'manual') {
     validateManualConfig(config);
+    return;
+  }
+  if (type === 'article') {
+    validateArticleConfig(config);
     return;
   }
   if (type === 'website') {
