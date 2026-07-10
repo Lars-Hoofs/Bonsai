@@ -30,6 +30,9 @@ import { extractUploadText } from './ingestion/extract-text';
 import { OCR_PROVIDER } from './ingestion/ocr-provider';
 import type { OcrProvider } from './ingestion/ocr-provider';
 import { KnowledgeSourcesService } from './knowledge-sources.service';
+import { isAudioOrVideo } from './transcription/media-type';
+import { TRANSCRIPTION_PROVIDER } from './transcription/transcription-provider';
+import type { TranscriptionProvider } from './transcription/transcription-provider';
 
 interface UploadedFileLike {
   originalname: string;
@@ -50,6 +53,8 @@ export class KnowledgeController {
     private readonly knowledge: KnowledgeSourcesService,
     private readonly storage: StorageService,
     private readonly bulk: KbBulkService,
+    @Inject(TRANSCRIPTION_PROVIDER)
+    private readonly transcription: TranscriptionProvider,
     // Optional so tests that construct KnowledgeController directly (no DI
     // container) keep working unchanged; without a config, OCR is treated as
     // disabled (extractUploadText requires ocrEnabled truthy to ever OCR).
@@ -138,15 +143,47 @@ export class KnowledgeController {
     @CurrentUser() user: AuthUser,
   ) {
     if (!file) throw new BadRequestException('No file uploaded (field "file")');
-    const text = await extractUploadText(
-      file.originalname,
-      file.mimetype,
-      file.buffer,
-      {
-        ocrEnabled: this.config?.ocrEnabled ?? false,
-        ocrProvider: this.ocrProvider,
-      },
-    );
+    // Audio/video uploads are transcribed to text via the self-hosted Whisper
+    // provider (#25); the resulting transcript is fed into the normal
+    // chunking/embedding pipeline exactly like any other extracted text. When
+    // Whisper is not enabled the upload is rejected with a clear 400 rather
+    // than silently indexing nothing.
+    let text: string;
+    if (isAudioOrVideo(file.originalname, file.mimetype)) {
+      if (!this.transcription.enabled) {
+        throw new BadRequestException(
+          'Audio/video transcription is not enabled on this deployment.',
+        );
+      }
+      try {
+        text = await this.transcription.transcribe(
+          file.buffer,
+          file.originalname,
+          file.mimetype,
+        );
+      } catch {
+        throw new BadRequestException(
+          'Failed to transcribe the uploaded audio/video file.',
+        );
+      }
+      if (text.length === 0) {
+        throw new BadRequestException(
+          'The uploaded audio/video produced an empty transcript.',
+        );
+      }
+    } else {
+      // Non-media uploads: extract text, falling back to OCR (#24) for
+      // scanned/image documents when OCR is enabled and a provider is wired.
+      text = await extractUploadText(
+        file.originalname,
+        file.mimetype,
+        file.buffer,
+        {
+          ocrEnabled: this.config?.ocrEnabled ?? false,
+          ocrProvider: this.ocrProvider,
+        },
+      );
+    }
     // Retain the raw file in object storage when configured (for re-processing,
     // download and audit); text extraction/indexing works regardless.
     let storageKey: string | undefined;

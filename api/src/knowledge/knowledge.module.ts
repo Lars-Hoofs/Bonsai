@@ -12,9 +12,10 @@ import type { OcrProvider } from './ingestion/ocr-provider';
 import { TesseractOcrProvider } from './ingestion/tesseract-ocr.provider';
 import { KnowledgeController } from './knowledge.controller';
 import { KnowledgeSourcesService } from './knowledge-sources.service';
+import { TranscriptionModule } from './transcription/transcription.module';
 
 @Module({
-  imports: [TenancyModule, EmbeddingModule],
+  imports: [TenancyModule, EmbeddingModule, TranscriptionModule],
   controllers: [KnowledgeController],
   providers: [
     ChunkingService,

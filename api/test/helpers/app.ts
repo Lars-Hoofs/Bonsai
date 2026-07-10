@@ -14,6 +14,13 @@ import { makeTestIdp, TEST_AUDIENCE, TEST_ISSUER, TestIdp } from './oidc';
 import { HttpExceptionFilter } from '../../src/common/http-exception.filter';
 import { requestIdMiddleware } from '../../src/common/request-id.middleware';
 
+/** A DI provider override: swap the value bound to `token` for `value` (e.g.
+ * to stub the Whisper TRANSCRIPTION_PROVIDER with an in-process fake). */
+export interface ProviderOverride {
+  token: unknown;
+  value: unknown;
+}
+
 export async function buildTestApp(
   pool: Pool,
   cfgOverrides: Partial<AppConfig> = {},
@@ -23,6 +30,7 @@ export async function buildTestApp(
   // (harmless — OCR only ever runs when a test also sets ocrEnabled: true
   // AND uploads an image/PDF with negligible text).
   ocrProviderOverride?: OcrProvider,
+  providerOverrides: ProviderOverride[] = [],
 ): Promise<{ app: INestApplication; idp: TestIdp }> {
   await runControlPlaneMigrations(pool);
   const idp = await makeTestIdp();
@@ -61,6 +69,11 @@ export async function buildTestApp(
     frustrationRefusalStreak: 2,
     costPer1kTokens: 0,
     estTokensPerAnswer: 1500,
+    // Whisper transcription off by default in tests (audio/video uploads
+    // rejected). A test that needs it overrides TRANSCRIPTION_PROVIDER.
+    whisperEnabled: false,
+    whisperModel: 'whisper-1',
+    whisperTimeoutMs: 300_000,
     // SMTP left unset: MailService stays a no-op so tests never send real mail.
     smtpPort: 587,
     smtpSecure: false,
@@ -85,6 +98,9 @@ export async function buildTestApp(
     builder = builder
       .overrideProvider(OCR_PROVIDER)
       .useValue(ocrProviderOverride);
+  }
+  for (const o of providerOverrides) {
+    builder = builder.overrideProvider(o.token).useValue(o.value);
   }
   const mod = await builder.compile();
   const app = mod.createNestApplication();
