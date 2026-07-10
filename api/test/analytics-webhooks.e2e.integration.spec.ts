@@ -168,4 +168,101 @@ describe('analytics + webhooks e2e', () => {
       ]),
     );
   });
+
+  it('surfaces CSAT + message feedback in analytics, viewer-readable, no OIDC required for the public feedback endpoints', async () => {
+    interface ConversationDetail {
+      messages: { id: string; role: string }[];
+    }
+
+    // Conversation 1: high CSAT + a thumbs-up on the bot reply.
+    const c1 = await request(app.getHttpServer())
+      .post(widgetBase)
+      .set('x-bonsai-key', widgetKey)
+      .send({})
+      .expect(201);
+    const { id: convo1, visitorSecret: secret1 } = c1.body as StartBody;
+    await request(app.getHttpServer())
+      .post(`${widgetBase}/${convo1}/messages`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', secret1)
+      .send({ content: 'hallo, wat zijn jullie openingstijden?' })
+      .expect(201);
+    const detail1 = await request(app.getHttpServer())
+      .get(`${widgetBase}/${convo1}`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', secret1)
+      .expect(200);
+    const bot1 = (detail1.body as ConversationDetail).messages.find(
+      (m) => m.role === 'bot',
+    );
+    if (!bot1) throw new Error('expected bot reply');
+
+    // No OIDC/Authorization header at all on these public feedback calls.
+    await request(app.getHttpServer())
+      .post(`${widgetBase}/${convo1}/csat`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', secret1)
+      .send({ score: 5, comment: 'Top!' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`${widgetBase}/${convo1}/messages/${bot1.id}/feedback`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', secret1)
+      .send({ rating: 'up' })
+      .expect(201);
+
+    // Conversation 2: low CSAT + a thumbs-down.
+    const c2 = await request(app.getHttpServer())
+      .post(widgetBase)
+      .set('x-bonsai-key', widgetKey)
+      .send({})
+      .expect(201);
+    const { id: convo2, visitorSecret: secret2 } = c2.body as StartBody;
+    await request(app.getHttpServer())
+      .post(`${widgetBase}/${convo2}/messages`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', secret2)
+      .send({ content: 'hallo, wat zijn jullie openingstijden?' })
+      .expect(201);
+    const detail2 = await request(app.getHttpServer())
+      .get(`${widgetBase}/${convo2}`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', secret2)
+      .expect(200);
+    const bot2 = (detail2.body as ConversationDetail).messages.find(
+      (m) => m.role === 'bot',
+    );
+    if (!bot2) throw new Error('expected bot reply');
+
+    await request(app.getHttpServer())
+      .post(`${widgetBase}/${convo2}/csat`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', secret2)
+      .send({ score: 2 })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`${widgetBase}/${convo2}/messages/${bot2.id}/feedback`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', secret2)
+      .send({ rating: 'down' })
+      .expect(201);
+
+    // Viewer role can read the CSAT analytics summary (RBAC: viewer-gated).
+    const csat = await request(app.getHttpServer())
+      .get(`${proj()}/analytics/csat`)
+      .set(auth())
+      .expect(200);
+    const c = csat.body as {
+      ratedConversations: number;
+      avgScore: number | null;
+      percentPositive: number;
+      messageFeedbackUp: number;
+      messageFeedbackDown: number;
+    };
+    expect(c.ratedConversations).toBe(2);
+    expect(c.avgScore).toBeCloseTo(3.5, 5);
+    expect(c.percentPositive).toBeCloseTo(0.5, 5);
+    expect(c.messageFeedbackUp).toBeGreaterThanOrEqual(1);
+    expect(c.messageFeedbackDown).toBeGreaterThanOrEqual(1);
+  });
 });

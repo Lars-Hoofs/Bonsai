@@ -24,4 +24,12 @@ export class AnalyticsController {
   ) {
     return this.analytics.unanswered(tenant.schemaName, projectId);
   }
+
+  @Get('csat')
+  csat(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+  ) {
+    return this.analytics.csat(tenant.schemaName, projectId);
+  }
 }

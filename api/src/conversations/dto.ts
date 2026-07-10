@@ -1,4 +1,13 @@
-import { IsIn, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class StartConversationDto {
   @IsOptional() @IsString() @Length(1, 200) visitorId?: string;
@@ -23,4 +32,13 @@ export class SetPresenceDto {
 
 export class AssignConversationDto {
   @IsOptional() @IsUUID() agentUserId?: string;
+}
+
+export class SubmitCsatDto {
+  @IsInt() @Min(1) @Max(5) score!: number;
+  @IsOptional() @IsString() @Length(1, 2000) comment?: string;
+}
+
+export class SubmitMessageFeedbackDto {
+  @IsIn(['up', 'down']) rating!: 'up' | 'down';
 }

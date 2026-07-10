@@ -573,6 +573,72 @@ export class ConversationsService {
     return this.mapConversation(row);
   }
 
+  /**
+   * Visitor submits (or overwrites — idempotent) a CSAT rating for the whole
+   * conversation. Ownership is proven the same way as every other
+   * visitor-facing mutation: id+project lookup, then constant-time secret
+   * comparison via `requireConversationForVisitor` (404 unknown id, 401
+   * wrong/missing secret, and in both cases nothing is written).
+   */
+  async submitCsat(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+    score: number,
+    comment?: string,
+  ): Promise<void> {
+    await this.requireConversationForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+    );
+    await this.tenantDb.withTenant(schemaName, (db) =>
+      db.execute(
+        sql`UPDATE conversations
+            SET csat_score = ${score}, csat_comment = ${comment ?? null}, updated_at = now()
+            WHERE id = ${conversationId}`,
+      ),
+    );
+  }
+
+  /**
+   * Visitor thumbs-up/down on a single bot answer. Verifies conversation
+   * ownership via the visitor secret, then that `messageId` both belongs to
+   * this conversation and is a bot message (visitors can't rate their own
+   * messages or agent/system messages) before upserting the rating.
+   */
+  async submitMessageFeedback(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+    messageId: string,
+    rating: 'up' | 'down',
+  ): Promise<void> {
+    await this.requireConversationForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+    );
+    await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT id FROM messages
+            WHERE id = ${messageId} AND conversation_id = ${conversationId} AND role = 'bot'`,
+      );
+      if (!r.rows[0]) {
+        throw new NotFoundException('Message not found in this conversation');
+      }
+      await db.execute(
+        sql`INSERT INTO message_feedback (message_id, rating)
+            VALUES (${messageId}, ${rating})
+            ON CONFLICT (message_id) DO UPDATE SET rating = EXCLUDED.rating, created_at = now()`,
+      );
+    });
+  }
+
   private mapConversation(row: Record<string, unknown>): ConversationSummary {
     return {
       id: row.id as string,

@@ -19,7 +19,13 @@ import {
 import { ResolvedWidgetKey } from '../apikeys/apikeys.service';
 import { ConversationsService } from './conversations.service';
 import { PublicWidgetGuard } from './public-widget.guard';
-import { EscalateDto, PostMessageDto, StartConversationDto } from './dto';
+import {
+  EscalateDto,
+  PostMessageDto,
+  StartConversationDto,
+  SubmitCsatDto,
+  SubmitMessageFeedbackDto,
+} from './dto';
 
 interface WidgetKeyedRequest extends Request {
   widgetKey?: ResolvedWidgetKey;
@@ -129,5 +135,50 @@ export class ConversationsPublicController {
       conversationId,
       visitorSecret,
     );
+  }
+
+  @Post(':conversationId/csat')
+  async submitCsat(
+    @Req() req: WidgetKeyedRequest,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Body() dto: SubmitCsatDto,
+    @Headers('x-bonsai-visitor-secret') visitorSecret: string | undefined,
+  ): Promise<{ ok: true }> {
+    const { schemaName, projectId } = requireWidgetKey(req);
+    if (!visitorSecret) {
+      throw new UnauthorizedException('Missing visitor secret');
+    }
+    await this.conversations.submitCsat(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+      dto.score,
+      dto.comment,
+    );
+    return { ok: true };
+  }
+
+  @Post(':conversationId/messages/:messageId/feedback')
+  async submitMessageFeedback(
+    @Req() req: WidgetKeyedRequest,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+    @Body() dto: SubmitMessageFeedbackDto,
+    @Headers('x-bonsai-visitor-secret') visitorSecret: string | undefined,
+  ): Promise<{ ok: true }> {
+    const { schemaName, projectId } = requireWidgetKey(req);
+    if (!visitorSecret) {
+      throw new UnauthorizedException('Missing visitor secret');
+    }
+    await this.conversations.submitMessageFeedback(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+      messageId,
+      dto.rating,
+    );
+    return { ok: true };
   }
 }

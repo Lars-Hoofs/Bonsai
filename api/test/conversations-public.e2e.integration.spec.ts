@@ -25,6 +25,7 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
   let tenantId: string;
   let projectId: string;
   let widgetKey: string;
+  let tenantSchema: string;
 
   const widgetBase = '/v1/widget/conversations';
   const auth = (): { Authorization: string } => ({
@@ -54,6 +55,12 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
       .send({ name: 'widget', kind: 'public_widget', projectId })
       .expect(201);
     widgetKey = (key.body as { key: string }).key;
+
+    const tenantRow = await pool.query<{ schema_name: string }>(
+      'SELECT schema_name FROM tenants WHERE id = $1',
+      [tenantId],
+    );
+    tenantSchema = tenantRow.rows[0].schema_name;
   }, 120000);
 
   afterAll(async () => {
@@ -232,5 +239,225 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
       await start().expect(201);
     }
     await start().expect(429);
+  });
+
+  describe('CSAT + message feedback (#23)', () => {
+    interface ConversationDetail {
+      conversation: { id: string };
+      messages: { id: string; role: string }[];
+    }
+
+    async function startConversationWithBotReply(): Promise<{
+      conversationId: string;
+      visitorSecret: string;
+      botMessageId: string;
+    }> {
+      const started = await request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', widgetKey)
+        .send({ language: 'nl' })
+        .expect(201);
+      const { id: conversationId, visitorSecret } = started.body as StartBody;
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/messages`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ content: 'hallo, wat zijn jullie openingstijden?' })
+        .expect(201);
+
+      const detail = await request(app.getHttpServer())
+        .get(`${widgetBase}/${conversationId}`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .expect(200);
+      const { messages } = detail.body as ConversationDetail;
+      const botMessage = messages.find((m) => m.role === 'bot');
+      if (!botMessage) throw new Error('expected a bot reply message');
+      return { conversationId, visitorSecret, botMessageId: botMessage.id };
+    }
+
+    it('accepts a CSAT score + comment from the owning visitor and stores it (idempotent overwrite)', async () => {
+      const { conversationId, visitorSecret } =
+        await startConversationWithBotReply();
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/csat`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ score: 5, comment: 'Great bot!' })
+        .expect(201);
+
+      // Overwrite (idempotent) — same conversation, new score/comment.
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/csat`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ score: 2, comment: 'Actually, not great' })
+        .expect(201);
+
+      const row = await pool.query<{
+        csat_score: number | null;
+        csat_comment: string | null;
+      }>(
+        `SELECT csat_score, csat_comment FROM "${tenantSchema}".conversations WHERE id = $1`,
+        [conversationId],
+      );
+      expect(row.rows[0].csat_score).toBe(2);
+      expect(row.rows[0].csat_comment).toBe('Actually, not great');
+    });
+
+    it('rejects CSAT with wrong/missing visitor secret (403/401) and never mutates', async () => {
+      const { conversationId } = await startConversationWithBotReply();
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/csat`)
+        .set('x-bonsai-key', widgetKey)
+        .send({ score: 4 })
+        .expect(401);
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/csat`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', 'wrong-secret-padding-0000000000000000')
+        .send({ score: 4 })
+        .expect(401);
+
+      const row = await pool.query<{ csat_score: number | null }>(
+        `SELECT csat_score FROM "${tenantSchema}".conversations WHERE id = $1`,
+        [conversationId],
+      );
+      expect(row.rows[0].csat_score).toBeNull();
+    });
+
+    it('rejects out-of-range CSAT scores', async () => {
+      const { conversationId, visitorSecret } =
+        await startConversationWithBotReply();
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/csat`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ score: 0 })
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/csat`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ score: 6 })
+        .expect(400);
+    });
+
+    it('rejects CSAT from a different conversation/visitor secret pairing (cross-conversation mismatch)', async () => {
+      const a = await startConversationWithBotReply();
+      const b = await startConversationWithBotReply();
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${a.conversationId}/csat`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', b.visitorSecret)
+        .send({ score: 5 })
+        .expect(401);
+    });
+
+    it('thumbs-up a bot message with the owning visitor secret and stores the rating', async () => {
+      const { conversationId, visitorSecret, botMessageId } =
+        await startConversationWithBotReply();
+
+      await request(app.getHttpServer())
+        .post(
+          `${widgetBase}/${conversationId}/messages/${botMessageId}/feedback`,
+        )
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ rating: 'up' })
+        .expect(201);
+
+      const row = await pool.query<{ rating: string }>(
+        `SELECT rating FROM "${tenantSchema}".message_feedback WHERE message_id = $1`,
+        [botMessageId],
+      );
+      expect(row.rows[0].rating).toBe('up');
+
+      // Upsert: visitor changes their mind.
+      await request(app.getHttpServer())
+        .post(
+          `${widgetBase}/${conversationId}/messages/${botMessageId}/feedback`,
+        )
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ rating: 'down' })
+        .expect(201);
+
+      const row2 = await pool.query<{ rating: string }>(
+        `SELECT rating FROM "${tenantSchema}".message_feedback WHERE message_id = $1`,
+        [botMessageId],
+      );
+      expect(row2.rows[0].rating).toBe('down');
+    });
+
+    it('rejects message feedback with wrong/missing visitor secret and never mutates', async () => {
+      const { conversationId, botMessageId } =
+        await startConversationWithBotReply();
+
+      await request(app.getHttpServer())
+        .post(
+          `${widgetBase}/${conversationId}/messages/${botMessageId}/feedback`,
+        )
+        .set('x-bonsai-key', widgetKey)
+        .send({ rating: 'up' })
+        .expect(401);
+
+      await request(app.getHttpServer())
+        .post(
+          `${widgetBase}/${conversationId}/messages/${botMessageId}/feedback`,
+        )
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', 'wrong-secret-padding-0000000000000000')
+        .send({ rating: 'up' })
+        .expect(401);
+
+      const row = await pool.query(
+        `SELECT rating FROM "${tenantSchema}".message_feedback WHERE message_id = $1`,
+        [botMessageId],
+      );
+      expect(row.rowCount).toBe(0);
+    });
+
+    it('rejects feedback on a message that does not belong to the conversation', async () => {
+      const a = await startConversationWithBotReply();
+      const b = await startConversationWithBotReply();
+
+      // b's message id, but a's conversation id + secret.
+      await request(app.getHttpServer())
+        .post(
+          `${widgetBase}/${a.conversationId}/messages/${b.botMessageId}/feedback`,
+        )
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', a.visitorSecret)
+        .send({ rating: 'up' })
+        .expect(404);
+
+      const row = await pool.query(
+        `SELECT rating FROM "${tenantSchema}".message_feedback WHERE message_id = $1`,
+        [b.botMessageId],
+      );
+      expect(row.rowCount).toBe(0);
+    });
+
+    it('rejects an invalid rating value', async () => {
+      const { conversationId, visitorSecret, botMessageId } =
+        await startConversationWithBotReply();
+
+      await request(app.getHttpServer())
+        .post(
+          `${widgetBase}/${conversationId}/messages/${botMessageId}/feedback`,
+        )
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ rating: 'sideways' })
+        .expect(400);
+    });
   });
 });

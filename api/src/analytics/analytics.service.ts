@@ -18,6 +18,14 @@ export interface UnansweredQuestion {
   count: number;
 }
 
+export interface CsatSummary {
+  ratedConversations: number;
+  avgScore: number | null;
+  percentPositive: number;
+  messageFeedbackUp: number;
+  messageFeedbackDown: number;
+}
+
 // Visitor-entered free text can be arbitrarily long and may contain pasted
 // PII (names, addresses, order numbers, etc.). `unanswered` surfaces this
 // text verbatim to tenant staff for KB-improvement purposes, so the payload
@@ -109,6 +117,48 @@ export class AnalyticsService {
         question: truncateQuestion(row.question as string),
         count: row.cnt as number,
       }));
+    });
+  }
+
+  /**
+   * CSAT summary (#23): rated-conversation count + average score over
+   * conversations with a non-null `csat_score`, the share of those scored
+   * >=4 ("positive"), and message-level thumbs-up/down counts from
+   * `message_feedback` (joined through messages -> conversations to scope
+   * by project).
+   */
+  async csat(schemaName: string, projectId: string): Promise<CsatSummary> {
+    return this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(sql`
+        SELECT
+          (SELECT count(*) FROM conversations
+             WHERE project_id=${projectId} AND csat_score IS NOT NULL) AS rated_conversations,
+          (SELECT avg(csat_score) FROM conversations
+             WHERE project_id=${projectId} AND csat_score IS NOT NULL) AS avg_score,
+          (SELECT count(*) FROM conversations
+             WHERE project_id=${projectId} AND csat_score >= 4) AS positive_conversations,
+          (SELECT count(*) FROM message_feedback f
+             JOIN messages m ON m.id = f.message_id
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE c.project_id=${projectId} AND f.rating = 'up') AS feedback_up,
+          (SELECT count(*) FROM message_feedback f
+             JOIN messages m ON m.id = f.message_id
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE c.project_id=${projectId} AND f.rating = 'down') AS feedback_down
+      `);
+      const row = r.rows[0];
+      const ratedConversations = Number(row.rated_conversations);
+      const positiveConversations = Number(row.positive_conversations);
+      return {
+        ratedConversations,
+        avgScore: row.avg_score == null ? null : Number(row.avg_score),
+        percentPositive:
+          ratedConversations === 0
+            ? 0
+            : positiveConversations / ratedConversations,
+        messageFeedbackUp: Number(row.feedback_up),
+        messageFeedbackDown: Number(row.feedback_down),
+      };
     });
   }
 }
