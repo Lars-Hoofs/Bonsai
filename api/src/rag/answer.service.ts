@@ -16,6 +16,8 @@ import { AnswerCacheService } from './answer-cache.service';
 import { detectLanguage } from './language-detect';
 import { ConnectorToolService } from '../connectors/connector-tool.service';
 import type { ToolSource } from '../connectors/connector-tool.service';
+import { resolveFallbackChain } from './fallback-chain';
+import type { ResolvedFallbackChain } from './fallback-chain';
 
 export interface Citation {
   index: number;
@@ -165,16 +167,22 @@ export class AnswerService {
 
     const project = await this.loadProject(schemaName, projectId);
     const threshold = project.confidenceThreshold;
+    // Configurable fallback chain (#29): drives which stages this flow tries
+    // (KB retrieval, live connector, human handover) and their effect on the
+    // escalation decision. The default resolves to KB->connector->human, i.e.
+    // exactly the pre-#29 behavior.
+    const chain = project.fallbackChain;
 
-    const queries = await this.expandQuery(question);
-    const chunks = await this.retrieval.retrieveMulti(
-      schemaName,
-      projectId,
-      queries,
-      {
-        language: project.language,
-      },
-    );
+    // Fallback chain (#29): only retrieve/ground on the knowledge base when
+    // the chain includes a `kb` stage (default: it does). A project whose
+    // chain omits `kb` (e.g. a pure connector-backed bot) skips KB retrieval
+    // entirely, so nothing but a live connector source can support an answer.
+    const queries = chain.usesKb ? await this.expandQuery(question) : [];
+    const chunks = chain.usesKb
+      ? await this.retrieval.retrieveMulti(schemaName, projectId, queries, {
+          language: project.language,
+        })
+      : [];
     // Raw top-cosine retrieval score. Drives the PRE-generation gate below
     // (unchanged behavior/threshold). Also feeds into the REPORTED
     // `confidence` on the result, but is no longer reported as-is except in
@@ -192,17 +200,20 @@ export class AnswerService {
     // source. Deliberately attempted BEFORE the confidence gate so that a
     // tool source alone (with 0 KB chunks, or chunks below threshold) can
     // still let the pipeline proceed — see the gate check below.
-    const toolSource = await this.attemptToolCall(
-      schemaName,
-      projectId,
-      question,
-    );
+    //
+    // Fallback chain (#29): the connector stage only engages when the
+    // project's chain includes it (default: it does). A project that removes
+    // `connector` from its chain gets KB-only answering with no live tool
+    // call, regardless of `toolCallingEnabled`.
+    const toolSource = chain.usesConnector
+      ? await this.attemptToolCall(schemaName, projectId, question)
+      : null;
 
     // Confidence gate: below the (per-project) threshold we do NOT guess —
     // UNLESS a live tool source was returned, in which case it alone can
     // support an answer even with an empty/low-confidence KB retrieval.
     if (!toolSource && (chunks.length === 0 || retrievalScore < threshold)) {
-      return this.refusal(retrievalScore, question);
+      return this.refusal(retrievalScore, question, chain);
     }
 
     // Prepend the tool source (if any) as source [1], shifting chunk
@@ -223,7 +234,7 @@ export class AnswerService {
     // actually verifies the claims, and it always runs.
     const cited = this.parseCitations(raw, sources);
     if (cited.length === 0) {
-      return this.ungroundedRefusal(retrievalScore, question);
+      return this.ungroundedRefusal(retrievalScore, question, chain);
     }
 
     // Second-pass groundedness verification: an independent model call
@@ -246,7 +257,7 @@ export class AnswerService {
           ? await this.claimCheck(raw, sources)
           : await this.selfCheck(raw, sources);
       if (!verdict) {
-        return this.ungroundedRefusal(retrievalScore, question);
+        return this.ungroundedRefusal(retrievalScore, question, chain);
       }
     }
 
@@ -256,7 +267,7 @@ export class AnswerService {
     // the citation-enforcement check above, but we guarantee the invariant
     // here regardless.
     if (cited.length === 0) {
-      return this.ungroundedRefusal(retrievalScore, question);
+      return this.ungroundedRefusal(retrievalScore, question, chain);
     }
 
     const citationCoverage = Math.min(
@@ -300,15 +311,25 @@ export class AnswerService {
   /** Gate refusal: 0 chunks retrieved, or retrievalScore below threshold —
    * we never called the LLM, so `confidence` is just the low raw retrieval
    * score. The refusal message is picked in the visitor's detected language
-   * (A10); refusals never carry follow-up suggestions. */
-  private refusal(retrievalScore: number, question: string): AnswerResult {
+   * (A10); refusals never carry follow-up suggestions.
+   *
+   * `escalationSuggested` follows the project's fallback chain (#29): the
+   * final `human` stage is what turns an unresolved question into a suggested
+   * handover, so a chain that omits `human` refuses WITHOUT suggesting
+   * escalation (KB-only project with no human fallback). The default chain
+   * includes `human`, preserving the pre-#29 behavior. */
+  private refusal(
+    retrievalScore: number,
+    question: string,
+    chain: ResolvedFallbackChain,
+  ): AnswerResult {
     this.metrics?.answersTotal.inc({ refused: 'true' });
     return {
       answer: refusalMessage(question),
       confidence: retrievalScore,
       refused: true,
       citations: [],
-      escalationSuggested: true,
+      escalationSuggested: chain.usesHuman,
       suggestedQuestions: [],
     };
   }
@@ -322,6 +343,7 @@ export class AnswerService {
   private ungroundedRefusal(
     retrievalScore: number,
     question: string,
+    chain: ResolvedFallbackChain,
   ): AnswerResult {
     this.metrics?.answersTotal.inc({ refused: 'true' });
     return {
@@ -329,7 +351,9 @@ export class AnswerService {
       confidence: Math.min(retrievalScore, 0.3),
       refused: true,
       citations: [],
-      escalationSuggested: true,
+      // See `refusal`: escalation is only suggested when the chain's final
+      // `human` stage is configured (default: it is).
+      escalationSuggested: chain.usesHuman,
       suggestedQuestions: [],
     };
   }
@@ -603,7 +627,11 @@ export class AnswerService {
   private async loadProject(
     schemaName: string,
     projectId: string,
-  ): Promise<{ language: string; confidenceThreshold: number }> {
+  ): Promise<{
+    language: string;
+    confidenceThreshold: number;
+    fallbackChain: ResolvedFallbackChain;
+  }> {
     return this.tenantDb.withTenant(schemaName, async (db) => {
       const r = await db.execute(
         sql`SELECT default_language, settings FROM projects WHERE id = ${projectId}`,
@@ -623,6 +651,10 @@ export class AnswerService {
       return {
         language: row.default_language ?? 'nl',
         confidenceThreshold: threshold,
+        // Configurable fallback chain (#29): tolerant best-effort read; an
+        // unset/malformed value resolves to the default KB->connector->human
+        // chain, preserving pre-#29 behavior exactly.
+        fallbackChain: resolveFallbackChain(settings),
       };
     });
   }

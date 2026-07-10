@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { FALLBACK_STAGES, isFallbackStage } from '../rag/fallback-chain';
 
 /**
  * `projects.settings` is a free-form jsonb blob (see `ProjectsService`/
@@ -28,6 +29,7 @@ export const KNOWN_SETTINGS_KEYS = [
   'followupSuggestionsEnabled',
   'dedupEnabled',
   'retrievalWindow',
+  'fallbackChain',
 ] as const;
 
 export type KnownSettingsKey = (typeof KNOWN_SETTINGS_KEYS)[number];
@@ -113,6 +115,46 @@ function assertBusinessHours(value: unknown): void {
 }
 
 /**
+ * Validates the `fallbackChain` setting (#29): an ordered, non-empty array of
+ * fallback stages, each either a plain stage string (`'kb'`/`'connector'`/
+ * `'human'`) or an object `{ type: <stage> }`. Duplicates and unknown stages
+ * are rejected here (the read-side `resolveFallbackChain` is separately
+ * tolerant, but the managed write surface stays strict/well-defined).
+ */
+function assertFallbackChain(value: unknown): void {
+  if (!Array.isArray(value)) {
+    throw new BadRequestException(
+      `Invalid fallbackChain: must be a non-empty array of stages (${FALLBACK_STAGES.join(', ')})`,
+    );
+  }
+  if (value.length === 0) {
+    throw new BadRequestException(
+      'Invalid fallbackChain: must contain at least one stage',
+    );
+  }
+  const seen = new Set<string>();
+  value.forEach((entry, i) => {
+    const stage =
+      typeof entry === 'string'
+        ? entry
+        : isPlainObject(entry)
+          ? (entry as { type?: unknown }).type
+          : undefined;
+    if (!isFallbackStage(stage)) {
+      throw new BadRequestException(
+        `Invalid fallbackChain[${i}]: must be one of ${FALLBACK_STAGES.join(', ')} (as a string or { type })`,
+      );
+    }
+    if (seen.has(stage)) {
+      throw new BadRequestException(
+        `Invalid fallbackChain: duplicate stage '${stage}'`,
+      );
+    }
+    seen.add(stage);
+  });
+}
+
+/**
  * Validates a partial settings-update payload against the known key set,
  * throwing `BadRequestException` on the first violation. Does not mutate
  * `input`.
@@ -171,6 +213,10 @@ export function assertSettingsPatchShape(
         'Invalid retrievalWindow: must be an integer >= 0',
       );
     }
+  }
+
+  if ('fallbackChain' in input) {
+    assertFallbackChain(input.fallbackChain);
   }
 
   for (const key of BOOLEAN_KEYS) {
