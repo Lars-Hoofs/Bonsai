@@ -33,6 +33,13 @@ import type { BusinessHours } from './business-hours';
 import { isFrustrated } from './frustration';
 import { renderTranscript } from './transcript';
 import { validateAttachment } from './attachment-validation';
+import {
+  computeDeadlines,
+  deriveSlaState,
+  isValidTransition,
+  readSlaPolicy,
+} from './sla';
+import type { SlaState, WorkflowStatus } from './sla';
 
 const DEFAULT_HANDOVER_MESSAGE = 'Gesprek doorgezet naar een medewerker.';
 const DEFAULT_AFTER_HOURS_MESSAGE =
@@ -77,10 +84,12 @@ export interface ConversationSummary {
   id: string;
   projectId: string;
   status: string;
+  workflowStatus: WorkflowStatus;
   language: string;
   startedAt: string;
   updatedAt: string;
   assignedAgentId: string | null;
+  sla: SlaState;
 }
 
 /**
@@ -187,10 +196,15 @@ export class ConversationsService {
     input: { visitorId?: string; language?: string },
   ): Promise<ConversationSummary & { visitorSecret: string }> {
     const visitorSecret = generateVisitorSecret();
+    // Stamp SLA deadlines up front from the project's SLA policy (if any), so
+    // breach detection is a pure comparison against `now` later on. No policy
+    // => null deadlines => the conversation can never breach (#37).
+    const settings = await this.loadProjectSettings(schemaName, projectId);
+    const deadlines = computeDeadlines(readSlaPolicy(settings), new Date());
     const row = await this.tenantDb.withTenant(schemaName, async (db) => {
       const r = await db.execute(
-        sql`INSERT INTO conversations (project_id, visitor_id, language, visitor_secret)
-            VALUES (${projectId}, ${input.visitorId ?? null}, ${input.language ?? 'nl'}, ${visitorSecret})
+        sql`INSERT INTO conversations (project_id, visitor_id, language, visitor_secret, first_response_due_at, resolution_due_at)
+            VALUES (${projectId}, ${input.visitorId ?? null}, ${input.language ?? 'nl'}, ${visitorSecret}, ${deadlines.firstResponseDueAt?.toISOString() ?? null}, ${deadlines.resolutionDueAt?.toISOString() ?? null})
             RETURNING *`,
       );
       return r.rows[0];
@@ -584,6 +598,65 @@ export class ConversationsService {
     return this.mapConversation(row);
   }
 
+  /**
+   * Transitions a conversation's agent-facing workflow status
+   * (open/pending/resolved, #37). Rejects a no-op / unknown target via
+   * `isValidTransition`. Resolving stamps `resolved_at` (the resolution SLA
+   * milestone); moving *out* of resolved clears it (a reopened ticket is no
+   * longer resolved and its resolution deadline is live again). Audited as
+   * `conversation.workflow_status_changed`.
+   */
+  async setWorkflowStatus(
+    tenantId: string,
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    to: WorkflowStatus,
+    actorUserId: string,
+  ): Promise<ConversationSummary> {
+    const convo = await this.requireConversation(
+      schemaName,
+      projectId,
+      conversationId,
+    );
+    const from = convo.workflowStatus;
+    if (!isValidTransition(from, to)) {
+      throw new BadRequestException(
+        `Invalid workflow status transition from '${from}' to '${to}'`,
+      );
+    }
+    const resolvedAtExpr =
+      to === 'resolved' ? sql`COALESCE(resolved_at, now())` : sql`NULL`;
+    const row = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`UPDATE conversations
+            SET workflow_status=${to}, resolved_at=${resolvedAtExpr}, updated_at=now()
+            WHERE id=${conversationId} AND project_id=${projectId}
+            RETURNING *`,
+      );
+      const updated = r.rows[0];
+      if (!updated) throw new NotFoundException('Conversation not found');
+      await this.audit.record(
+        {
+          tenantId,
+          actorUserId,
+          action: 'conversation.workflow_status_changed',
+          resource: `conversation:${conversationId}`,
+          metadata: { from, to },
+        },
+        db,
+      );
+      return updated;
+    });
+    await this.webhooks.dispatch(
+      schemaName,
+      projectId,
+      'conversation.workflow_status_changed',
+      { conversationId, from, to },
+    );
+    return this.mapConversation(row);
+  }
+
   private async loadProjectSettings(
     schemaName: string,
     projectId: string,
@@ -603,6 +676,7 @@ export class ConversationsService {
     projectId: string,
     status: string,
     assignee?: AssigneeFilter,
+    workflowStatus?: WorkflowStatus,
   ): Promise<ConversationSummary[]> {
     return this.tenantDb.withTenant(schemaName, async (db) => {
       const assigneeClause =
@@ -611,8 +685,12 @@ export class ConversationsService {
           : assignee !== undefined
             ? sql`AND assigned_agent_id = ${assignee.userId}`
             : sql``;
+      const workflowClause =
+        workflowStatus !== undefined
+          ? sql`AND workflow_status = ${workflowStatus}`
+          : sql``;
       const r = await db.execute(
-        sql`SELECT * FROM conversations WHERE project_id=${projectId} AND status=${status} ${assigneeClause} ORDER BY updated_at DESC`,
+        sql`SELECT * FROM conversations WHERE project_id=${projectId} AND status=${status} ${assigneeClause} ${workflowClause} ORDER BY updated_at DESC`,
       );
       return r.rows.map((row) => this.mapConversation(row));
     });
@@ -799,8 +877,15 @@ export class ConversationsService {
         sql`UPDATE handovers SET agent_user_id=${agentUserId}
             WHERE conversation_id=${conversationId} AND returned_at IS NULL`,
       );
+      // Stamp the first-response SLA milestone on the first agent message
+      // only (COALESCE keeps the earliest timestamp on later replies), so
+      // the first-response deadline is measured against when a human actually
+      // first replied (#37).
       await db.execute(
-        sql`UPDATE conversations SET updated_at=now() WHERE id=${conversationId}`,
+        sql`UPDATE conversations
+            SET updated_at=now(),
+                first_responded_at=COALESCE(first_responded_at, now())
+            WHERE id=${conversationId}`,
       );
     });
     this.emit(tenantId, projectId, conversationId, 'agent', text);
@@ -1109,14 +1194,32 @@ export class ConversationsService {
   }
 
   private mapConversation(row: Record<string, unknown>): ConversationSummary {
+    const toDate = (v: unknown): Date | null => {
+      if (v == null) return null;
+      if (v instanceof Date) return v;
+      if (typeof v === 'string' || typeof v === 'number') return new Date(v);
+      return null;
+    };
+    const sla = deriveSlaState(
+      {
+        firstResponseDueAt: toDate(row.first_response_due_at),
+        resolutionDueAt: toDate(row.resolution_due_at),
+        firstRespondedAt: toDate(row.first_responded_at),
+        resolvedAt: toDate(row.resolved_at),
+      },
+      new Date(),
+    );
     return {
       id: row.id as string,
       projectId: row.project_id as string,
       status: row.status as string,
+      workflowStatus:
+        (row.workflow_status as WorkflowStatus | undefined) ?? 'open',
       language: row.language as string,
       startedAt: String(row.started_at),
       updatedAt: String(row.updated_at),
       assignedAgentId: (row.assigned_agent_id as string | null) ?? null,
+      sla,
     };
   }
 }
