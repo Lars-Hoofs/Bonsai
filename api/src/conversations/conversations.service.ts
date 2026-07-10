@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
+  BadRequestException,
   Inject,
   Injectable,
   NotFoundException,
@@ -14,6 +15,8 @@ import { UsageService } from '../usage/usage.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { AuditService } from '../audit/audit.service';
 import { PresenceService } from '../presence/presence.service';
+import { MembershipsService } from '../auth/memberships.service';
+import { ROLE_RANK } from '../auth/roles.decorator';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
@@ -105,6 +108,7 @@ export class ConversationsService {
     private readonly events: EventEmitter2,
     private readonly metrics: MetricsService,
     private readonly presence: PresenceService,
+    private readonly memberships: MembershipsService,
     private readonly audit: AuditService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
@@ -445,6 +449,98 @@ export class ConversationsService {
       );
       return updated;
     });
+    return this.mapConversation(row);
+  }
+
+  /**
+   * Transfers (reassigns) an assigned conversation from its current agent to
+   * another agent, with an optional note (#39). Reuses the #21 assignment
+   * mechanism (`conversations.assigned_agent_id`) for the effective handoff,
+   * and additionally records an immutable `conversation_transfers` history
+   * row so who-moved-what-to-whom is auditable. The note, when present, is
+   * both stored on the transfer row and posted into the thread as a `system`
+   * message so the receiving agent sees the context inline.
+   *
+   * Guardrails:
+   * - the conversation must currently be in `handover` (you can't hand off a
+   *   bot-driven or closed conversation to an agent);
+   * - the target must be a member of this tenant holding at least the `agent`
+   *   role (you can't transfer to a viewer or a non-member);
+   * - transferring to the agent it's already assigned to is a no-op error
+   *   (nothing to transfer).
+   */
+  async transfer(
+    tenantId: string,
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    toAgentUserId: string,
+    actorUserId: string,
+    note?: string,
+  ): Promise<ConversationSummary> {
+    const convo = await this.requireConversation(
+      schemaName,
+      projectId,
+      conversationId,
+    );
+    if (convo.status !== 'handover') {
+      throw new BadRequestException(
+        'Only a conversation in handover can be transferred',
+      );
+    }
+    if (convo.assignedAgentId === toAgentUserId) {
+      throw new BadRequestException(
+        'Conversation is already assigned to that agent',
+      );
+    }
+    const membership = await this.memberships.find(tenantId, toAgentUserId);
+    if (!membership || ROLE_RANK[membership.role] < ROLE_RANK['agent']) {
+      throw new BadRequestException(
+        'Transfer target must be an agent of this tenant',
+      );
+    }
+
+    const fromAgentUserId = convo.assignedAgentId;
+    const row = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`UPDATE conversations SET assigned_agent_id=${toAgentUserId}, updated_at=now()
+            WHERE id=${conversationId} AND project_id=${projectId}
+            RETURNING *`,
+      );
+      const updated = r.rows[0];
+      if (!updated) throw new NotFoundException('Conversation not found');
+      await db.execute(
+        sql`INSERT INTO conversation_transfers
+              (conversation_id, from_agent_user_id, to_agent_user_id, transferred_by_user_id, note)
+            VALUES (${conversationId}, ${fromAgentUserId}, ${toAgentUserId}, ${actorUserId}, ${note ?? null})`,
+      );
+      // Keep the open handover row's agent in sync so the inbox and handover
+      // history agree on who currently owns the conversation.
+      await db.execute(
+        sql`UPDATE handovers SET agent_user_id=${toAgentUserId}
+            WHERE conversation_id=${conversationId} AND returned_at IS NULL`,
+      );
+      if (note) {
+        await db.execute(
+          sql`INSERT INTO messages (conversation_id, role, content)
+              VALUES (${conversationId}, 'system', ${note})`,
+        );
+      }
+      await this.audit.record(
+        {
+          tenantId,
+          actorUserId,
+          action: 'conversation.transferred',
+          resource: `conversation:${conversationId}`,
+          metadata: { fromAgentUserId, toAgentUserId, note: note ?? null },
+        },
+        db,
+      );
+      return updated;
+    });
+    if (note) {
+      this.emit(tenantId, projectId, conversationId, 'system', note);
+    }
     return this.mapConversation(row);
   }
 

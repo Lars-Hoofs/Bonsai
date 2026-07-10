@@ -577,6 +577,183 @@ describe('agent presence + conversation assignment e2e (#21)', () => {
     ).not.toContain(conversationId);
   });
 
+  it('transfers an assigned conversation to another agent, records history + audit, and posts the note (#39)', async () => {
+    const fromToken = await makeAgent('from39@acme.eu', 'oidc|from39');
+    const toToken = await makeAgent('to39@acme.eu', 'oidc|to39');
+
+    // Only the "from" agent is available, so the escalation auto-assigns to
+    // them; the "to" agent is a valid agent-role member either way.
+    await pool.query(
+      `UPDATE agent_presence SET status = 'away' WHERE tenant_id = $1`,
+      [tenantId],
+    );
+    await request(app.getHttpServer())
+      .put(presenceUrl())
+      .set(bearer(fromToken))
+      .send({ status: 'available' })
+      .expect(200);
+
+    const { conversationId } = await escalateNewConversation();
+
+    // Establish a known "from" assignment by claiming as fromToken.
+    const claimed = await request(app.getHttpServer())
+      .post(`${agentBase()}/${conversationId}/assign`)
+      .set(bearer(fromToken))
+      .send({})
+      .expect(201);
+    const fromAgentId = (claimed.body as ConversationSummaryBody)
+      .assignedAgentId;
+    expect(fromAgentId).toEqual(expect.any(String));
+
+    // Resolve the "to" agent's user id (owner can see the whole inbox, but we
+    // need the id itself). Transfer to that agent with a note.
+    const membersRow = await pool.query<{ user_id: string; email: string }>(
+      `SELECT m.user_id, u.email
+         FROM memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.tenant_id = $1 AND u.email = 'to39@acme.eu'`,
+      [tenantId],
+    );
+    const toAgentId = membersRow.rows[0].user_id;
+
+    const transferred = await request(app.getHttpServer())
+      .post(`${agentBase()}/${conversationId}/transfer`)
+      .set(bearer(fromToken))
+      .send({ toAgentUserId: toAgentId, note: 'Klant vraagt naar facturatie.' })
+      .expect(201);
+    expect((transferred.body as ConversationSummaryBody).assignedAgentId).toBe(
+      toAgentId,
+    );
+
+    // Now shows up in the "to" agent's inbox and no longer the "from" one.
+    const inboxTo = await request(app.getHttpServer())
+      .get(`${agentBase()}?status=handover&assignee=me`)
+      .set(bearer(toToken))
+      .expect(200);
+    expect(
+      (inboxTo.body as ConversationSummaryBody[]).map((c) => c.id),
+    ).toContain(conversationId);
+    const inboxFrom = await request(app.getHttpServer())
+      .get(`${agentBase()}?status=handover&assignee=me`)
+      .set(bearer(fromToken))
+      .expect(200);
+    expect(
+      (inboxFrom.body as ConversationSummaryBody[]).map((c) => c.id),
+    ).not.toContain(conversationId);
+
+    // History row recorded with from/to/actor + note.
+    const tenantRow = await pool.query<{ schema_name: string }>(
+      'SELECT schema_name FROM tenants WHERE id = $1',
+      [tenantId],
+    );
+    const tenantSchema = tenantRow.rows[0].schema_name;
+    const transfers = await pool.query<{
+      from_agent_user_id: string | null;
+      to_agent_user_id: string;
+      transferred_by_user_id: string;
+      note: string | null;
+    }>(
+      `SELECT from_agent_user_id, to_agent_user_id, transferred_by_user_id, note
+         FROM "${tenantSchema}".conversation_transfers
+        WHERE conversation_id = $1`,
+      [conversationId],
+    );
+    expect(transfers.rowCount).toBe(1);
+    expect(transfers.rows[0].from_agent_user_id).toBe(fromAgentId);
+    expect(transfers.rows[0].to_agent_user_id).toBe(toAgentId);
+    expect(transfers.rows[0].transferred_by_user_id).toBe(fromAgentId);
+    expect(transfers.rows[0].note).toBe('Klant vraagt naar facturatie.');
+
+    // Audit trail records conversation.transferred.
+    const auditRows = await pool.query<{
+      metadata: { fromAgentUserId: string | null; toAgentUserId: string };
+    }>(
+      `SELECT metadata FROM audit_log WHERE action = 'conversation.transferred' AND resource = $1`,
+      [`conversation:${conversationId}`],
+    );
+    expect(auditRows.rowCount).toBe(1);
+    expect(auditRows.rows[0].metadata.toAgentUserId).toBe(toAgentId);
+
+    // The note is posted into the thread as a system message.
+    const view = await request(app.getHttpServer())
+      .get(`${agentBase()}/${conversationId}`)
+      .set(ownerAuth())
+      .expect(200);
+    const messages = (
+      view.body as { messages: { role: string; content: string }[] }
+    ).messages;
+    expect(
+      messages.some(
+        (m) =>
+          m.role === 'system' && m.content === 'Klant vraagt naar facturatie.',
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects transferring to a non-agent and a conversation not in handover (#39)', async () => {
+    const agentToken = await makeAgent('agent39b@acme.eu', 'oidc|agent39b');
+    await pool.query(
+      `UPDATE agent_presence SET status = 'away' WHERE tenant_id = $1`,
+      [tenantId],
+    );
+    await request(app.getHttpServer())
+      .put(presenceUrl())
+      .set(bearer(agentToken))
+      .send({ status: 'available' })
+      .expect(200);
+
+    const { conversationId } = await escalateNewConversation();
+
+    // A viewer is a member but below agent rank -> 400. Authenticate the
+    // viewer first so their user row is upserted, then add them by email
+    // (mirrors makeAgent's ordering).
+    await request(app.getHttpServer())
+      .get('/v1/tenants')
+      .set(
+        bearer(
+          await idp.sign({ sub: 'oidc|viewer39', email: 'viewer39@acme.eu' }),
+        ),
+      )
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/members`)
+      .set(ownerAuth())
+      .send({ email: 'viewer39@acme.eu', role: 'viewer' })
+      .expect(201);
+    const viewerRow = await pool.query<{ user_id: string }>(
+      `SELECT m.user_id FROM memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.tenant_id = $1 AND u.email = 'viewer39@acme.eu'`,
+      [tenantId],
+    );
+    await request(app.getHttpServer())
+      .post(`${agentBase()}/${conversationId}/transfer`)
+      .set(bearer(agentToken))
+      .send({ toAgentUserId: viewerRow.rows[0].user_id })
+      .expect(400);
+
+    // A bot-driven (not-in-handover) conversation can't be transferred.
+    const started = await request(app.getHttpServer())
+      .post(widgetBase)
+      .set('x-bonsai-key', widgetKey)
+      .send({ language: 'nl' })
+      .expect(201);
+    const botConvoId = (started.body as { id: string }).id;
+    const otherAgentToken = await makeAgent(
+      'agent39c@acme.eu',
+      'oidc|agent39c',
+    );
+    void otherAgentToken;
+    const otherRow = await pool.query<{ user_id: string }>(
+      `SELECT m.user_id FROM memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.tenant_id = $1 AND u.email = 'agent39c@acme.eu'`,
+      [tenantId],
+    );
+    await request(app.getHttpServer())
+      .post(`${agentBase()}/${botConvoId}/transfer`)
+      .set(bearer(agentToken))
+      .send({ toAgentUserId: otherRow.rows[0].user_id })
+      .expect(400);
+  });
+
   it('rejects presence + assign for a viewer (403)', async () => {
     const viewerToken = await idp.sign({
       sub: 'oidc|viewer4',

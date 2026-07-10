@@ -18,7 +18,12 @@ import type {
   ConversationSummary,
 } from './conversations.service';
 import { ConversationsService } from './conversations.service';
-import { AgentMessageDto, AssignConversationDto, SetPresenceDto } from './dto';
+import {
+  AgentMessageDto,
+  AssignConversationDto,
+  SetPresenceDto,
+  TransferConversationDto,
+} from './dto';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -141,6 +146,32 @@ export class ConversationsController {
       conversationId,
       dto.agentUserId ?? user.id,
       user.id,
+    );
+  }
+
+  /**
+   * Transfer (reassign) an in-handover conversation to another agent, with an
+   * optional note. Records the move in `conversation_transfers` history and
+   * updates the assignment. Distinct from `assign`: the target is required,
+   * must be an agent+ member, and the conversation must be in handover.
+   */
+  @Post(':conversationId/transfer')
+  @RequireRole('agent')
+  async transfer(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Body() dto: TransferConversationDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<ConversationSummary> {
+    return this.conversations.transfer(
+      tenant.id,
+      tenant.schemaName,
+      projectId,
+      conversationId,
+      dto.toAgentUserId,
+      user.id,
+      dto.note,
     );
   }
 }
