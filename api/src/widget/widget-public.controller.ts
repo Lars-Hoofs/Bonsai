@@ -11,6 +11,7 @@ import { ApiKeysService } from '../apikeys/apikeys.service';
 import { rateLimitGuardFromConfig } from '../usage/rate-limit.guard';
 import { PreviewTokenService } from './preview-token.service';
 import { WidgetService } from './widget.service';
+import { WidgetCopyService } from './widget-copy.service';
 
 // Per-IP: this endpoint is unauthenticated until the key is resolved inside
 // the handler, so it's an easy target for widget-key brute-forcing.
@@ -35,6 +36,7 @@ export class WidgetPublicController {
     private readonly apiKeys: ApiKeysService,
     private readonly widget: WidgetService,
     private readonly previewTokens: PreviewTokenService,
+    private readonly copy: WidgetCopyService,
   ) {}
 
   @Get('config')
@@ -43,7 +45,9 @@ export class WidgetPublicController {
   async config(
     @Headers('x-bonsai-key') keyHeader: string | undefined,
     @Headers('origin') origin: string | undefined,
+    @Headers('accept-language') acceptLanguage: string | undefined,
     @Query('key') keyQuery: string | undefined,
+    @Query('locale') locale: string | undefined,
   ) {
     const key = keyHeader ?? keyQuery;
     if (!key) throw new UnauthorizedException('Missing widget key');
@@ -51,7 +55,51 @@ export class WidgetPublicController {
     if (!resolved) {
       throw new UnauthorizedException('Invalid widget key or origin');
     }
-    return this.widget.getPublished(resolved.schemaName, resolved.projectId);
+    const theme = await this.widget.getPublished(
+      resolved.schemaName,
+      resolved.projectId,
+    );
+    // Copy is additive: a project may have a published theme but no published
+    // copy yet. Don't fail config delivery in that case — omit `copy`.
+    const copy = await this.copy
+      .getPublishedCopy(
+        resolved.schemaName,
+        resolved.projectId,
+        locale,
+        acceptLanguage,
+      )
+      .catch(() => null);
+    return { ...theme, copy };
+  }
+
+  /**
+   * Dedicated multi-language copy delivery, mirroring `config`. Serves the
+   * PUBLISHED copy for the requested/negotiated locale (explicit `?locale=`
+   * takes precedence over the `Accept-Language` header). 404 until first
+   * copy publish.
+   */
+  @Get('copy')
+  @Public()
+  @UseGuards(widgetConfigRateLimitGuard)
+  async widgetCopy(
+    @Headers('x-bonsai-key') keyHeader: string | undefined,
+    @Headers('origin') origin: string | undefined,
+    @Headers('accept-language') acceptLanguage: string | undefined,
+    @Query('key') keyQuery: string | undefined,
+    @Query('locale') locale: string | undefined,
+  ) {
+    const key = keyHeader ?? keyQuery;
+    if (!key) throw new UnauthorizedException('Missing widget key');
+    const resolved = await this.apiKeys.resolveWidgetKey(key, origin);
+    if (!resolved) {
+      throw new UnauthorizedException('Invalid widget key or origin');
+    }
+    return this.copy.getPublishedCopy(
+      resolved.schemaName,
+      resolved.projectId,
+      locale,
+      acceptLanguage,
+    );
   }
 
   /**

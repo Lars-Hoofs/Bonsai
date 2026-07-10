@@ -2,13 +2,15 @@ import { Module } from '@nestjs/common';
 import { TenancyModule } from '../tenancy/tenancy.module';
 import { ApiKeysModule } from '../apikeys/apikeys.module';
 import { WidgetController } from './widget.controller';
+import { WidgetCopyController } from './widget-copy.controller';
 import { WidgetPublicController } from './widget-public.controller';
 import { WidgetService } from './widget.service';
 import { PreviewTokenService } from './preview-token.service';
+import { WidgetCopyService } from './widget-copy.service';
 
 @Module({
   imports: [TenancyModule, ApiKeysModule],
-  controllers: [WidgetController, WidgetPublicController],
-  providers: [WidgetService, PreviewTokenService],
+  controllers: [WidgetController, WidgetCopyController, WidgetPublicController],
+  providers: [WidgetService, PreviewTokenService, WidgetCopyService],
 })
 export class WidgetModule {}
