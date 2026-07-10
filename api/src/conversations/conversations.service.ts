@@ -14,6 +14,7 @@ import { UsageService } from '../usage/usage.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { AuditService } from '../audit/audit.service';
 import { PresenceService } from '../presence/presence.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
@@ -105,6 +106,7 @@ export class ConversationsService {
     private readonly events: EventEmitter2,
     private readonly metrics: MetricsService,
     private readonly presence: PresenceService,
+    private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
@@ -367,6 +369,15 @@ export class ConversationsService {
         assignedAgentId,
       },
     );
+    // Handover notifications (#38): fan the escalation out to configured
+    // Slack incoming-webhook and email targets. Best-effort — the service
+    // swallows delivery errors so a dead channel never breaks escalation.
+    await this.notifications.notifyHandover(schemaName, projectId, {
+      conversationId,
+      reason: storedReason,
+      afterHours,
+      assignedAgentId,
+    });
     return { afterHours, assignedAgentId };
   }
 
