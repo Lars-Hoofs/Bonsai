@@ -199,6 +199,60 @@ describe('assertSettingsPatchShape', () => {
     });
   });
 
+  describe('fallbackChain', () => {
+    it('accepts a chain of stage strings', () => {
+      expect(() =>
+        assertSettingsPatchShape({
+          fallbackChain: ['kb', 'connector', 'human'],
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts a chain of { type } objects', () => {
+      expect(() =>
+        assertSettingsPatchShape({
+          fallbackChain: [{ type: 'kb' }, { type: 'human' }],
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts a single-stage chain', () => {
+      expect(() =>
+        assertSettingsPatchShape({ fallbackChain: ['kb'] }),
+      ).not.toThrow();
+    });
+
+    it('rejects a non-array', () => {
+      expect(() => assertSettingsPatchShape({ fallbackChain: 'kb' })).toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('rejects an empty array', () => {
+      expect(() => assertSettingsPatchShape({ fallbackChain: [] })).toThrow(
+        /at least one stage/,
+      );
+    });
+
+    it('rejects an unknown stage', () => {
+      expect(() =>
+        assertSettingsPatchShape({ fallbackChain: ['kb', 'bogus'] }),
+      ).toThrow(/fallbackChain\[1\]/);
+    });
+
+    it('rejects a non-stage element type', () => {
+      expect(() =>
+        assertSettingsPatchShape({ fallbackChain: ['kb', 42] }),
+      ).toThrow(BadRequestException);
+    });
+
+    it('rejects a duplicate stage', () => {
+      expect(() =>
+        assertSettingsPatchShape({ fallbackChain: ['kb', 'kb'] }),
+      ).toThrow(/duplicate/);
+    });
+  });
+
   it('accepts a combined valid patch', () => {
     expect(() =>
       assertSettingsPatchShape({
