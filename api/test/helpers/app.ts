@@ -2,7 +2,11 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Pool } from 'pg';
 import { AppModule } from '../../src/app.module';
-import { APP_CONFIG, AppConfig } from '../../src/config/config';
+import {
+  APP_CONFIG,
+  AppConfig,
+  DEFAULT_PLAN_LIMITS,
+} from '../../src/config/config';
 import { PG_POOL } from '../../src/db/db.module';
 import { JWT_KEY_GETTER } from '../../src/auth/oidc.verifier';
 import { runControlPlaneMigrations } from '../../src/db/run-control-plane-migrations';
@@ -53,6 +57,11 @@ export async function buildTestApp(
     // SMTP left unset: MailService stays a no-op so tests never send real mail.
     smtpPort: 587,
     smtpSecure: false,
+    // Plan/tier limits (#50): built-in defaults (starter maxProjects=2 etc.)
+    // are generous enough that existing tests aren't affected; enforcement
+    // itself is covered by a dedicated plan-limits e2e suite that lowers a
+    // specific tenant's plan/limits via PLAN_LIMITS_JSON overrides.
+    planLimits: DEFAULT_PLAN_LIMITS,
     ...cfgOverrides,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })

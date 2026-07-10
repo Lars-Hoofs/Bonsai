@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm';
 import { AuditService } from '../audit/audit.service';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
+import { PlanLimitsService } from '../plan-limits/plan-limits.service';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { IngestionService } from './ingestion/ingestion.service';
 import { IngestionQueueService } from './ingestion/ingestion-queue.service';
@@ -82,6 +83,7 @@ export class KnowledgeSourcesService {
     private readonly tenantDb: TenantDbService,
     private readonly ingestion: IngestionService,
     private readonly audit: AuditService,
+    private readonly planLimits: PlanLimitsService,
     @Inject(APP_CONFIG) cfg?: AppConfig,
     // Optional: when a Redis-backed queue is active, ingestion runs in the
     // background instead of inline. Absent (tests/dev without Redis) -> inline.
@@ -142,6 +144,11 @@ export class KnowledgeSourcesService {
     actorUserId: string,
   ): Promise<SourceRow> {
     validateSourceConfig(input.type, input.config);
+    await this.planLimits.assertCanCreateSource(
+      tenant.id,
+      tenant.schemaName,
+      projectId,
+    );
     const id = await this.tenantDb.withTenant(tenant.schemaName, async (db) => {
       const r = await db.execute(
         sql`INSERT INTO knowledge_sources (project_id, type, name, config, status)

@@ -15,6 +15,8 @@ import {
 import { KnowledgeSourcesService } from '../src/knowledge/knowledge-sources.service';
 import { AuditService } from '../src/audit/audit.service';
 import type { AppConfig } from '../src/config/config';
+import { DEFAULT_PLAN_LIMITS } from '../src/config/config';
+import { PlanLimitsService } from '../src/plan-limits/plan-limits.service';
 import { runControlPlaneMigrations } from '../src/db/run-control-plane-migrations';
 import * as schema from '../src/db/schema';
 import { startPg } from './helpers/pg';
@@ -37,6 +39,7 @@ const cfg = (overrides: Partial<AppConfig> = {}): AppConfig =>
   ({
     ingestionStaleMs: 15 * 60 * 1000,
     ingestionTimeoutMs: 60_000,
+    planLimits: DEFAULT_PLAN_LIMITS,
     ...overrides,
   }) as AppConfig;
 
@@ -156,10 +159,16 @@ describe('stale-processing ingestion reaper + inline timeout', () => {
       cfg(),
     );
     const audit = new AuditService(drizzle(pool, { schema }));
+    const planLimits = new PlanLimitsService(
+      drizzle(pool, { schema }),
+      cfg({ ingestionTimeoutMs }),
+      tenantDb,
+    );
     const knowledge = new KnowledgeSourcesService(
       tenantDb,
       ingestion,
       audit,
+      planLimits,
       cfg({ ingestionTimeoutMs }),
     );
 

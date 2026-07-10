@@ -21,7 +21,7 @@ export class ProjectsController {
   @Post()
   @RequireRole('editor')
   create(@Tenant() tenant: TenantRef, @Body() dto: CreateProjectDto) {
-    return this.projectsService.create(tenant.schemaName, dto);
+    return this.projectsService.create(tenant, dto);
   }
 
   @Get()
