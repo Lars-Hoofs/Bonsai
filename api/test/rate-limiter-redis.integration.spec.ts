@@ -32,6 +32,7 @@ describe('RateLimiterService (Redis-backed)', () => {
       ingestionTimeoutMs: 60_000,
       s3Region: 'us-east-1',
       selfCheckEnabled: true,
+      verificationMode: 'self-check',
       widgetCorsOrigins: [],
     };
   }, 120_000);

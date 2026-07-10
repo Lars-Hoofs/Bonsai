@@ -22,6 +22,7 @@ const cfg = {
   ingestionTimeoutMs: 60_000,
   s3Region: 'us-east-1',
   selfCheckEnabled: true,
+  verificationMode: 'self-check',
   widgetCorsOrigins: [],
 } satisfies AppConfig;
 

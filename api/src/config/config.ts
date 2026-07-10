@@ -81,6 +81,14 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Which groundedness verifier runs when SELF_CHECK_ENABLED is true (A7):
+  // 'self-check' (default) issues one verdict for the whole answer, as
+  // before. 'claim-nli' is a stricter, opt-in mode that splits the answer
+  // into individual claims and requires EVERY claim to be independently
+  // entailed by the sources, refusing if any single claim is unsupported.
+  // When SELF_CHECK_ENABLED is false (e.g. tests), no verifier runs
+  // regardless of this mode.
+  VERIFICATION_MODE: z.enum(['self-check', 'claim-nli']).default('self-check'),
   // Multi-query retrieval (query expansion + cross-query RRF fusion): before
   // retrieving, an extra LLM call proposes alternative phrasings of the
   // question, each is retrieved independently, and the results are fused.
@@ -156,6 +164,7 @@ export interface AppConfig {
   s3SecretKey?: string;
   s3Bucket?: string;
   selfCheckEnabled: boolean;
+  verificationMode: 'self-check' | 'claim-nli';
   multiQueryEnabled: boolean;
   retrievalWindow: number;
   billingEnabled: boolean;
@@ -205,6 +214,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     s3SecretKey: d.S3_SECRET_KEY,
     s3Bucket: d.S3_BUCKET,
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
+    verificationMode: d.VERIFICATION_MODE,
     multiQueryEnabled: d.MULTI_QUERY_ENABLED,
     retrievalWindow: d.RETRIEVAL_WINDOW,
     billingEnabled: d.BILLING_ENABLED,

@@ -25,10 +25,18 @@ const isSelfCheckCall = (messages: LlmMessage[]): boolean =>
     (m) => m.role === 'system' && m.content.includes('BONSAI_SELF_CHECK_V1'),
   );
 
+/** True if this call is the claim-level NLI verification (A7), routed via
+ * its own distinct system-role tag — see answer.service.ts. */
+const isClaimCheckCall = (messages: LlmMessage[]): boolean =>
+  messages.some(
+    (m) => m.role === 'system' && m.content.includes('BONSAI_CLAIM_CHECK_V1'),
+  );
+
 const cfg = (
   selfCheckEnabled: boolean,
   extra: Partial<AppConfig> = {},
-): AppConfig => ({ selfCheckEnabled, ...extra }) as AppConfig;
+): AppConfig =>
+  ({ selfCheckEnabled, verificationMode: 'self-check', ...extra }) as AppConfig;
 
 describe('RAG answer pipeline (anti-hallucination)', () => {
   let container: StartedPostgreSqlContainer;
@@ -207,6 +215,90 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
     );
     expect(res.refused).toBe(true);
     expect(res.citations).toHaveLength(0);
+  });
+
+  describe('claim-level NLI verification (A7, opt-in verificationMode="claim-nli")', () => {
+    const answerWithClaimCheck = (llm: LlmProvider): AnswerService =>
+      new AnswerService(
+        tenantDb,
+        retrieval,
+        llm,
+        cfg(true, { verificationMode: 'claim-nli' }),
+      );
+
+    it('does not refuse when every claim is judged supported', async () => {
+      const allSupported: LlmProvider = {
+        complete: (messages) =>
+          Promise.resolve(
+            isClaimCheckCall(messages)
+              ? JSON.stringify({
+                  claims: [
+                    {
+                      claim: 'De winkel is open op werkdagen.',
+                      supported: true,
+                    },
+                    { claim: 'De winkel opent om negen uur.', supported: true },
+                  ],
+                })
+              : 'De winkel is open op werkdagen vanaf negen uur [1].',
+          ),
+      };
+      const res = await answerWithClaimCheck(allSupported).answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      expect(res.refused).toBe(false);
+      expect(res.citations.length).toBeGreaterThan(0);
+    });
+
+    it('refuses when at least one claim is judged unsupported', async () => {
+      const oneUnsupported: LlmProvider = {
+        complete: (messages) =>
+          Promise.resolve(
+            isClaimCheckCall(messages)
+              ? JSON.stringify({
+                  claims: [
+                    {
+                      claim: 'De winkel is open op werkdagen.',
+                      supported: true,
+                    },
+                    {
+                      claim: 'De winkel is ook open in het weekend.',
+                      supported: false,
+                    },
+                  ],
+                })
+              : 'De winkel is open op werkdagen en in het weekend [1].',
+          ),
+      };
+      const res = await answerWithClaimCheck(oneUnsupported).answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      expect(res.refused).toBe(true);
+      expect(res.citations).toHaveLength(0);
+      expect(res.escalationSuggested).toBe(true);
+    });
+
+    it('refuses (fail closed) when the claim-check returns malformed/non-JSON output', async () => {
+      const malformed: LlmProvider = {
+        complete: (messages) =>
+          Promise.resolve(
+            isClaimCheckCall(messages)
+              ? 'sure, all claims look supported to me'
+              : 'De winkel is open op werkdagen vanaf negen uur [1].',
+          ),
+      };
+      const res = await answerWithClaimCheck(malformed).answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      expect(res.refused).toBe(true);
+      expect(res.citations).toHaveLength(0);
+    });
   });
 
   it('neutralizes a prompt-injection attempt embedded in KB chunk text (in-band marker spoofing)', async () => {
