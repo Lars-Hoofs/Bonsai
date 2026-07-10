@@ -197,6 +197,21 @@ const schema = z.object({
   // a real price.
   COST_PER_1K_TOKENS: z.coerce.number().nonnegative().default(0),
   EST_TOKENS_PER_ANSWER: z.coerce.number().int().positive().default(1500),
+  // Self-hosted Whisper transcription (#25): when WHISPER_ENABLED is true and
+  // WHISPER_ENDPOINT points at a self-hosted, OpenAI-compatible Whisper HTTP
+  // service (a Docker sidecar — no paid SaaS), uploaded audio/video files are
+  // transcribed to text and fed into the normal chunking/embedding pipeline.
+  // Off by default: audio/video uploads are rejected with a clear error until
+  // an operator opts in. WHISPER_API_KEY is optional (most self-hosted servers
+  // need none). The timeout bounds a single (potentially slow) transcription.
+  WHISPER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  WHISPER_ENDPOINT: z.string().url().optional(),
+  WHISPER_API_KEY: z.string().optional(),
+  WHISPER_MODEL: z.string().default('whisper-1'),
+  WHISPER_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
   // Self-hosted SMTP mail (free — no paid email provider). Optional: when
   // SMTP_HOST is unset, MailService is a no-op (logs at debug only), so
   // dev/test never send real mail. Fill these in for a real deployment.
@@ -280,6 +295,11 @@ export interface AppConfig {
   frustrationRefusalStreak: number;
   costPer1kTokens: number;
   estTokensPerAnswer: number;
+  whisperEnabled: boolean;
+  whisperEndpoint?: string;
+  whisperApiKey?: string;
+  whisperModel: string;
+  whisperTimeoutMs: number;
   smtpHost?: string;
   smtpPort: number;
   smtpUser?: string;
@@ -349,6 +369,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     frustrationRefusalStreak: d.FRUSTRATION_REFUSAL_STREAK,
     costPer1kTokens: d.COST_PER_1K_TOKENS,
     estTokensPerAnswer: d.EST_TOKENS_PER_ANSWER,
+    whisperEnabled: d.WHISPER_ENABLED,
+    whisperEndpoint: d.WHISPER_ENDPOINT,
+    whisperApiKey: d.WHISPER_API_KEY,
+    whisperModel: d.WHISPER_MODEL,
+    whisperTimeoutMs: d.WHISPER_TIMEOUT_MS,
     smtpHost: d.SMTP_HOST,
     smtpPort: d.SMTP_PORT,
     smtpUser: d.SMTP_USER,

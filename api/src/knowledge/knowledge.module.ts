@@ -6,9 +6,10 @@ import { IngestionService } from './ingestion/ingestion.service';
 import { IngestionQueueService } from './ingestion/ingestion-queue.service';
 import { KnowledgeController } from './knowledge.controller';
 import { KnowledgeSourcesService } from './knowledge-sources.service';
+import { TranscriptionModule } from './transcription/transcription.module';
 
 @Module({
-  imports: [TenancyModule, EmbeddingModule],
+  imports: [TenancyModule, EmbeddingModule, TranscriptionModule],
   controllers: [KnowledgeController],
   providers: [
     ChunkingService,

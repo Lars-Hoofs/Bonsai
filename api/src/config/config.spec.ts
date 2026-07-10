@@ -116,4 +116,34 @@ describe('loadConfig', () => {
       /NEAR_DUP_THRESHOLD/,
     );
   });
+
+  it('defaults whisperEnabled to false with a default model/timeout', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.whisperEnabled).toBe(false);
+    expect(cfg.whisperEndpoint).toBeUndefined();
+    expect(cfg.whisperModel).toBe('whisper-1');
+    expect(cfg.whisperTimeoutMs).toBe(300_000);
+  });
+
+  it('parses WHISPER_ENABLED + endpoint/model/timeout', () => {
+    const cfg = loadConfig({
+      ...valid,
+      WHISPER_ENABLED: 'true',
+      WHISPER_ENDPOINT: 'http://whisper:8000/v1/audio/transcriptions',
+      WHISPER_MODEL: 'small',
+      WHISPER_TIMEOUT_MS: '60000',
+    });
+    expect(cfg.whisperEnabled).toBe(true);
+    expect(cfg.whisperEndpoint).toBe(
+      'http://whisper:8000/v1/audio/transcriptions',
+    );
+    expect(cfg.whisperModel).toBe('small');
+    expect(cfg.whisperTimeoutMs).toBe(60_000);
+  });
+
+  it('rejects a non-URL WHISPER_ENDPOINT', () => {
+    expect(() =>
+      loadConfig({ ...valid, WHISPER_ENDPOINT: 'not-a-url' }),
+    ).toThrow(/WHISPER_ENDPOINT/);
+  });
 });
