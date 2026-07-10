@@ -51,3 +51,13 @@ export class SubmitMessageFeedbackDto {
 export class EmailTranscriptDto {
   @IsEmail() @Length(3, 320) email!: string;
 }
+
+/**
+ * Multipart body accompanying a visitor attachment upload. The file itself
+ * arrives via the `file` multipart part (handled by FileInterceptor); this is
+ * just the optional visitor-supplied caption for the message the upload
+ * creates.
+ */
+export class UploadAttachmentDto {
+  @IsOptional() @IsString() @Length(1, 4000) caption?: string;
+}
