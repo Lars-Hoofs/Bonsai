@@ -1,4 +1,4 @@
-import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
 import { Tenant } from '../auth/auth.types';
 import type { TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
@@ -31,5 +31,20 @@ export class AnalyticsController {
     @Param('projectId', ParseUUIDPipe) projectId: string,
   ) {
     return this.analytics.csat(tenant.schemaName, projectId);
+  }
+
+  /**
+   * Deflection rate & trend (#44): overall + per-day share of conversations
+   * resolved by the bot without a human handover, over a configurable range
+   * (`days`, default 30, clamped to 365).
+   */
+  @Get('deflection')
+  deflection(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Query('days') days?: string,
+  ) {
+    const parsed = days === undefined ? undefined : Number(days);
+    return this.analytics.deflection(tenant.schemaName, projectId, parsed);
   }
 }
