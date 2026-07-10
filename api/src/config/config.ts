@@ -190,6 +190,13 @@ const schema = z.object({
   // including the answer just computed) that counts as a frustration signal
   // on its own, even without explicit negative wording.
   FRUSTRATION_REFUSAL_STREAK: z.coerce.number().int().positive().default(2),
+  // Usage/cost analytics (#43): rough cost estimate = answers *
+  // EST_TOKENS_PER_ANSWER / 1000 * COST_PER_1K_TOKENS. Both default to values
+  // that make the estimate a no-op (price 0 => cost always 0) so there's no
+  // dependency on external pricing data until an operator opts in by setting
+  // a real price.
+  COST_PER_1K_TOKENS: z.coerce.number().nonnegative().default(0),
+  EST_TOKENS_PER_ANSWER: z.coerce.number().int().positive().default(1500),
 });
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
@@ -259,6 +266,8 @@ export interface AppConfig {
   nearDupThreshold: number;
   frustrationAutoEscalateEnabled: boolean;
   frustrationRefusalStreak: number;
+  costPer1kTokens: number;
+  estTokensPerAnswer: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -320,5 +329,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     nearDupThreshold: d.NEAR_DUP_THRESHOLD,
     frustrationAutoEscalateEnabled: d.FRUSTRATION_AUTO_ESCALATE_ENABLED,
     frustrationRefusalStreak: d.FRUSTRATION_REFUSAL_STREAK,
+    costPer1kTokens: d.COST_PER_1K_TOKENS,
+    estTokensPerAnswer: d.EST_TOKENS_PER_ANSWER,
   };
 }

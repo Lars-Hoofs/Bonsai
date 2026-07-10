@@ -12,11 +12,42 @@ export interface UsageView {
   remaining: number;
 }
 
+export interface MonthlyUsage {
+  period: string;
+  answers: number;
+  estimatedTokens: number;
+  estimatedCost: number;
+}
+
+export interface UsageSummary {
+  months: MonthlyUsage[];
+  totalAnswers: number;
+  totalEstimatedTokens: number;
+  totalEstimatedCost: number;
+  costPer1kTokens: number;
+  estTokensPerAnswer: number;
+}
+
 /** Current billing period as 'YYYY-MM' in UTC. */
 export function currentPeriod(now: Date): string {
   const y = now.getUTCFullYear();
   const m = String(now.getUTCMonth() + 1).padStart(2, '0');
   return `${y}-${m}`;
+}
+
+/**
+ * The N most recent 'YYYY-MM' periods (UTC), most-recent-last, ending at
+ * (and including) `now`'s period.
+ */
+export function trailingPeriods(now: Date, count: number): string[] {
+  const periods: string[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1),
+    );
+    periods.push(currentPeriod(d));
+  }
+  return periods;
 }
 
 @Injectable()
@@ -99,6 +130,51 @@ export class UsageService {
       used,
       quota,
       remaining: Math.max(0, quota - used),
+    };
+  }
+
+  /**
+   * Cost/usage analytics (#43): per-month 'answers' usage for the current +
+   * last (months-1) periods, plus a rough cost estimate. The estimate is
+   * deliberately simplistic (answers * estTokensPerAnswer / 1000 *
+   * costPer1kTokens) -- it's a ballpark for the operator to budget against,
+   * not a reconciled bill against an actual LLM provider invoice. When
+   * costPer1kTokens is 0 (the default), estimatedCost is always 0, so this
+   * feature has no external pricing dependency out of the box.
+   */
+  async summary(tenantId: string, months = 6): Promise<UsageSummary> {
+    const periods = trailingPeriods(new Date(), months);
+    const rows = await this.pool.query<{ period: string; value: string }>(
+      `SELECT period, value FROM usage_records
+       WHERE tenant_id = $1 AND metric = 'answers' AND period = ANY($2::text[])`,
+      [tenantId, periods],
+    );
+    const byPeriod = new Map<string, number>(
+      rows.rows.map((r) => [r.period, Number(r.value)]),
+    );
+    const { costPer1kTokens, estTokensPerAnswer } = this.cfg;
+    const monthList: MonthlyUsage[] = periods.map((period) => {
+      const answers = byPeriod.get(period) ?? 0;
+      const estimatedTokens = answers * estTokensPerAnswer;
+      const estimatedCost = (estimatedTokens / 1000) * costPer1kTokens;
+      return { period, answers, estimatedTokens, estimatedCost };
+    });
+    const totalAnswers = monthList.reduce((s, m) => s + m.answers, 0);
+    const totalEstimatedTokens = monthList.reduce(
+      (s, m) => s + m.estimatedTokens,
+      0,
+    );
+    const totalEstimatedCost = monthList.reduce(
+      (s, m) => s + m.estimatedCost,
+      0,
+    );
+    return {
+      months: monthList,
+      totalAnswers,
+      totalEstimatedTokens,
+      totalEstimatedCost,
+      costPer1kTokens,
+      estTokensPerAnswer,
     };
   }
 }

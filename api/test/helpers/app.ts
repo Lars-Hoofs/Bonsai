@@ -48,6 +48,8 @@ export async function buildTestApp(
     nearDupThreshold: 0.97,
     frustrationAutoEscalateEnabled: true,
     frustrationRefusalStreak: 2,
+    costPer1kTokens: 0,
+    estTokensPerAnswer: 1500,
     ...cfgOverrides,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
