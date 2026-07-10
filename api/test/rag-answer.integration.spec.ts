@@ -39,6 +39,13 @@ const isFollowupCall = (messages: LlmMessage[]): boolean =>
     (m) => m.role === 'system' && m.content.includes('BONSAI_FOLLOWUP_V1'),
   );
 
+/** True if this call is the multi-turn query-condense call (#27), routed via
+ * its own distinct system-role tag — see answer.service.ts. */
+const isCondenseCall = (messages: LlmMessage[]): boolean =>
+  messages.some(
+    (m) => m.role === 'system' && m.content.includes('BONSAI_CONDENSE_V1'),
+  );
+
 const cfg = (
   selfCheckEnabled: boolean,
   extra: Partial<AppConfig> = {},
@@ -692,6 +699,192 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
       // document — citation identity is unaffected by expansion.
       expect(res.refused).toBe(false);
       expect(res.citations[0].documentTitle).toBe('Fietsenwinkel garantie');
+    });
+  });
+
+  describe('multi-turn context (#27)', () => {
+    const HISTORY = [
+      { role: 'visitor' as const, content: 'Hebben jullie een winkel?' },
+      { role: 'bot' as const, content: 'Ja, wij hebben een fysieke winkel.' },
+    ];
+
+    it('condenses a follow-up into a standalone retrieval query AND passes prior turns to the answer prompt, when enabled with a real llm', async () => {
+      let condenseUserPrompt = '';
+      let answerUserPrompt = '';
+      const stub: LlmProvider = {
+        complete: (messages) => {
+          if (isCondenseCall(messages)) {
+            condenseUserPrompt =
+              messages.find((m) => m.role === 'user')?.content ?? '';
+            // The elliptical follow-up "en de openingstijden?" is rewritten
+            // into a self-contained query that actually matches the KB doc.
+            return Promise.resolve('wat zijn de openingstijden van de winkel');
+          }
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          answerUserPrompt =
+            messages.find((m) => m.role === 'user')?.content ?? '';
+          return Promise.resolve('De winkel is open van negen tot vijf [1].');
+        },
+      };
+      const realCfg = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: false,
+        followupSuggestionsEnabled: false,
+        multiTurnContextEnabled: true,
+        multiTurnMaxTurns: 6,
+      });
+      const svc = new AnswerService(tenantDb, retrieval, stub, realCfg);
+      const res = await svc.answer(
+        schemaName,
+        projectId,
+        // Elliptical follow-up that shares no useful tokens with the KB doc on
+        // its own; only the condensed standalone query does.
+        'en de openingstijden?',
+        HISTORY,
+      );
+
+      // The condense call saw the prior turns as context.
+      expect(condenseUserPrompt).toContain('Hebben jullie een winkel?');
+      // Retrieval used the condensed query, so the answer is grounded/cited.
+      expect(res.refused).toBe(false);
+      expect(res.citations[0].documentTitle).toBe('Openingstijden');
+      // The answer prompt itself carried the prior turns in a <history> block.
+      expect(answerUserPrompt).toContain('<history>');
+      expect(answerUserPrompt).toContain('Hebben jullie een winkel?');
+      // The ORIGINAL follow-up (not the condensed query) is what the model is
+      // asked to answer.
+      expect(answerUserPrompt).toContain('en de openingstijden?');
+    });
+
+    it('falls back to the original question (no condense, no history block) when multiTurnContextEnabled is false', async () => {
+      let condenseCalls = 0;
+      let answerUserPrompt = '';
+      const stub: LlmProvider = {
+        complete: (messages) => {
+          if (isCondenseCall(messages)) condenseCalls++;
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          answerUserPrompt =
+            messages.find((m) => m.role === 'user')?.content ?? '';
+          return Promise.resolve('De winkel is open van negen tot vijf [1].');
+        },
+      };
+      const realCfg = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: false,
+        followupSuggestionsEnabled: false,
+        multiTurnContextEnabled: false,
+      });
+      const svc = new AnswerService(tenantDb, retrieval, stub, realCfg);
+      const res = await svc.answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+        HISTORY,
+      );
+      expect(condenseCalls).toBe(0);
+      expect(answerUserPrompt).not.toContain('<history>');
+      expect(res.refused).toBe(false);
+    });
+
+    it('does not condense or inject history when history is empty, even if enabled', async () => {
+      let condenseCalls = 0;
+      let answerUserPrompt = '';
+      const stub: LlmProvider = {
+        complete: (messages) => {
+          if (isCondenseCall(messages)) condenseCalls++;
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          answerUserPrompt =
+            messages.find((m) => m.role === 'user')?.content ?? '';
+          return Promise.resolve('De winkel is open van negen tot vijf [1].');
+        },
+      };
+      const realCfg = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: false,
+        followupSuggestionsEnabled: false,
+        multiTurnContextEnabled: true,
+      });
+      const svc = new AnswerService(tenantDb, retrieval, stub, realCfg);
+      const res = await svc.answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+        [],
+      );
+      expect(condenseCalls).toBe(0);
+      expect(answerUserPrompt).not.toContain('<history>');
+      expect(res.refused).toBe(false);
+    });
+
+    it('a per-project settings.multiTurnContextEnabled=false disables multi-turn even when the global default is on', async () => {
+      const offProjectId = await tenantDb.withTenant(schemaName, async (db) => {
+        const p = await db.execute(
+          sql`INSERT INTO projects (name, settings)
+              VALUES ('BotNoMT',
+                '{"confidenceThreshold":0.1,"multiTurnContextEnabled":false}'::jsonb)
+              RETURNING id`,
+        );
+        const id = (p.rows[0] as { id: string }).id;
+        const s = await db.execute(
+          sql`INSERT INTO knowledge_sources (project_id, type, name, config, status)
+              VALUES (${id}, 'manual', 'Openingstijden',
+                ${JSON.stringify({
+                  title: 'Openingstijden',
+                  body: 'De openingstijden zijn maandag tot en met vrijdag van negen tot vijf uur.',
+                  language: 'nl',
+                })}::jsonb, 'pending') RETURNING id`,
+        );
+        return { id, sourceId: (s.rows[0] as { id: string }).id };
+      });
+      await ingestion.ingestSource(schemaName, offProjectId.sourceId);
+
+      let condenseCalls = 0;
+      const stub: LlmProvider = {
+        complete: (messages) => {
+          if (isCondenseCall(messages)) condenseCalls++;
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          return Promise.resolve('De winkel is open van negen tot vijf [1].');
+        },
+      };
+      // Global default ON, but the project setting turns it OFF.
+      const realCfg = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: false,
+        followupSuggestionsEnabled: false,
+        multiTurnContextEnabled: true,
+        multiTurnMaxTurns: 6,
+      });
+      const svc = new AnswerService(tenantDb, retrieval, stub, realCfg);
+      await svc.answer(
+        schemaName,
+        offProjectId.id,
+        'wat zijn de openingstijden van de winkel',
+        HISTORY,
+      );
+      expect(condenseCalls).toBe(0);
+    });
+
+    it('with only the fake LLM (no real llm), never condenses or injects history regardless of the flag', async () => {
+      // The default `cfg(true)` has no llmApiUrl, so multi-turn must stay off
+      // even if the per-project/global flag were on — same conservative
+      // philosophy as multi-query/follow-ups. Passing history must not change
+      // the deterministic single-turn behavior.
+      const res = await answerWith(new FakeLlmProvider()).answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+        HISTORY,
+      );
+      expect(res.refused).toBe(false);
+      expect(res.citations[0].documentTitle).toBe('Openingstijden');
     });
   });
 });

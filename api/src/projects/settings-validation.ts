@@ -24,6 +24,7 @@ export const KNOWN_SETTINGS_KEYS = [
   'afterHoursMessage',
   'selfCheckEnabled',
   'multiQueryEnabled',
+  'multiTurnContextEnabled',
   'toolCallingEnabled',
   'followupSuggestionsEnabled',
   'dedupEnabled',
@@ -37,6 +38,7 @@ const VERIFICATION_MODES = ['self-check', 'claim-nli'] as const;
 const BOOLEAN_KEYS: ReadonlySet<KnownSettingsKey> = new Set([
   'selfCheckEnabled',
   'multiQueryEnabled',
+  'multiTurnContextEnabled',
   'toolCallingEnabled',
   'followupSuggestionsEnabled',
   'dedupEnabled',

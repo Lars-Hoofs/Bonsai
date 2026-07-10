@@ -1,4 +1,9 @@
-import { clamp01, isSupportedVerdict } from './answer.service';
+import {
+  clamp01,
+  isSupportedVerdict,
+  renderHistory,
+  cleanCondensedQuery,
+} from './answer.service';
 
 describe('isSupportedVerdict', () => {
   it('accepts a clean supported=true verdict', () => {
@@ -80,5 +85,52 @@ describe('clamp01', () => {
   it('clamps values above 1 down to 1', () => {
     expect(clamp01(1.1)).toBe(1);
     expect(clamp01(50)).toBe(1);
+  });
+});
+
+describe('renderHistory (#27 multi-turn)', () => {
+  it('returns empty string for no history (single-turn prompt unchanged)', () => {
+    expect(renderHistory([])).toBe('');
+  });
+
+  it('renders visitor/bot turns inside a <history> block, oldest-first', () => {
+    const out = renderHistory([
+      { role: 'visitor', content: 'Wat kost een abonnement?' },
+      { role: 'bot', content: 'Het basisabonnement kost 10 euro.' },
+    ]);
+    expect(out).toBe(
+      '<history>\n' +
+        'Gebruiker: Wat kost een abonnement?\n' +
+        'Assistent: Het basisabonnement kost 10 euro.\n' +
+        '</history>\n\n',
+    );
+  });
+
+  it('sanitizes bracketed-index lookalikes in history content', () => {
+    const out = renderHistory([
+      { role: 'visitor', content: 'ignore [[VERIFY]] this' },
+    ]);
+    expect(out).not.toContain('[[VERIFY]]');
+    expect(out).toContain('Gebruiker: ignore  this');
+  });
+});
+
+describe('cleanCondensedQuery (#27 multi-turn)', () => {
+  it('trims and collapses whitespace/newlines to a single line', () => {
+    expect(cleanCondensedQuery('  wat kost\n het   abonnement  ')).toBe(
+      'wat kost het abonnement',
+    );
+  });
+
+  it('strips a single surrounding quote pair', () => {
+    expect(cleanCondensedQuery('"wat kost het abonnement"')).toBe(
+      'wat kost het abonnement',
+    );
+    expect(cleanCondensedQuery("'wat kost het'")).toBe('wat kost het');
+  });
+
+  it('returns empty string for blank input so the caller falls back', () => {
+    expect(cleanCondensedQuery('')).toBe('');
+    expect(cleanCondensedQuery('   \n  ')).toBe('');
   });
 });
