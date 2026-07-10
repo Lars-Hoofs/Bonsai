@@ -9,6 +9,7 @@ import {
 import { Public } from '../auth/public.decorator';
 import { ApiKeysService } from '../apikeys/apikeys.service';
 import { rateLimitGuardFromConfig } from '../usage/rate-limit.guard';
+import { PreviewTokenService } from './preview-token.service';
 import { WidgetService } from './widget.service';
 
 // Per-IP: this endpoint is unauthenticated until the key is resolved inside
@@ -31,6 +32,7 @@ export class WidgetPublicController {
   constructor(
     private readonly apiKeys: ApiKeysService,
     private readonly widget: WidgetService,
+    private readonly previewTokens: PreviewTokenService,
   ) {}
 
   @Get('config')
@@ -48,5 +50,22 @@ export class WidgetPublicController {
       throw new UnauthorizedException('Invalid widget key or origin');
     }
     return this.widget.getPublished(resolved.schemaName, resolved.projectId);
+  }
+
+  /**
+   * Shareable draft preview: resolves a signed, short-lived (1h)
+   * `theme/preview-token` (see WidgetController.createPreviewToken) to the
+   * project's current DRAFT theme, so a stakeholder can view in-progress
+   * changes before they're published — no widget key required, since the
+   * token itself is the credential (and it only ever grants read access to
+   * one project's draft).
+   */
+  @Get('preview')
+  @Public()
+  @UseGuards(widgetConfigRateLimitGuard)
+  async preview(@Query('token') token: string | undefined) {
+    if (!token) throw new UnauthorizedException('Missing preview token');
+    const claims = await this.previewTokens.verify(token);
+    return this.widget.getDraftForPreview(claims.schemaName, claims.projectId);
   }
 }

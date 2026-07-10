@@ -53,6 +53,7 @@ export async function buildTestApp(
     // SMTP left unset: MailService stays a no-op so tests never send real mail.
     smtpPort: 587,
     smtpSecure: false,
+    widgetPreviewTokenSecret: 'test-widget-preview-secret',
     ...cfgOverrides,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
