@@ -10,7 +10,7 @@ import {
 import { Tenant } from '../auth/auth.types';
 import type { TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
-import { SaveThemeDto } from './dto';
+import { SaveTargetingDto, SaveThemeDto, SaveTriggersDto } from './dto';
 import { WidgetService } from './widget.service';
 
 @Controller('tenants/:tenantId/projects/:projectId/widget')
@@ -52,5 +52,29 @@ export class WidgetController {
     @Param('projectId', ParseUUIDPipe) projectId: string,
   ) {
     return this.widget.getPublished(tenant.schemaName, projectId);
+  }
+
+  // --- Page-targeting rules (#11) ---
+
+  @Put('targeting')
+  @RequireRole('editor')
+  saveTargeting(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: SaveTargetingDto,
+  ) {
+    return this.widget.saveTargeting(tenant.schemaName, projectId, dto);
+  }
+
+  // --- Proactive triggers (#12) ---
+
+  @Put('triggers')
+  @RequireRole('editor')
+  saveTriggers(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: SaveTriggersDto,
+  ) {
+    return this.widget.saveTriggers(tenant.schemaName, projectId, dto);
   }
 }

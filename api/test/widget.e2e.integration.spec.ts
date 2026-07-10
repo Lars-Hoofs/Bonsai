@@ -9,10 +9,31 @@ import { TestIdp } from './helpers/oidc';
 interface IdBody {
   id: string;
 }
+interface TargetingRule {
+  mode: 'show' | 'hide';
+  matchType: 'glob' | 'regex';
+  pattern: string;
+}
 interface ThemeView {
   draft: { window?: { accent?: string } };
   published: { window?: { accent?: string } } | null;
   publishedVersion: number;
+  targeting: {
+    draft: { defaultShow: boolean; rules: TargetingRule[] };
+    published: { defaultShow: boolean; rules: TargetingRule[] } | null;
+  };
+  triggers: {
+    draft: {
+      afterSeconds: number | null;
+      scrollDepth: number | null;
+      exitIntent: boolean;
+    };
+    published: {
+      afterSeconds: number | null;
+      scrollDepth: number | null;
+      exitIntent: boolean;
+    } | null;
+  };
 }
 
 describe('widget theme e2e', () => {
@@ -99,5 +120,95 @@ describe('widget theme e2e', () => {
       (live.body as { theme: { window?: { accent?: string } } }).theme.window
         ?.accent,
     ).toBe('#FF0000');
+  });
+
+  it('edits and publishes page-targeting rules (#11) and proactive triggers (#12)', async () => {
+    // Fresh config starts with permissive defaults.
+    const initial = await request(app.getHttpServer())
+      .get(`${base()}/theme`)
+      .set(auth())
+      .expect(200);
+    expect((initial.body as ThemeView).targeting.draft).toEqual({
+      defaultShow: true,
+      rules: [],
+    });
+    expect((initial.body as ThemeView).triggers.draft).toEqual({
+      afterSeconds: null,
+      scrollDepth: null,
+      exitIntent: false,
+    });
+
+    // Editors set targeting rules.
+    const savedTargeting = await request(app.getHttpServer())
+      .put(`${base()}/targeting`)
+      .set(auth())
+      .send({
+        defaultShow: false,
+        rules: [
+          { mode: 'show', matchType: 'glob', pattern: '/help/*' },
+          { mode: 'hide', matchType: 'regex', pattern: '^/admin/' },
+        ],
+      })
+      .expect(200);
+    expect(
+      (savedTargeting.body as ThemeView).targeting.draft.rules,
+    ).toHaveLength(2);
+
+    // Editors set proactive triggers.
+    await request(app.getHttpServer())
+      .put(`${base()}/triggers`)
+      .set(auth())
+      .send({ afterSeconds: 15, scrollDepth: 60, exitIntent: true })
+      .expect(200);
+
+    // Invalid config is rejected.
+    await request(app.getHttpServer())
+      .put(`${base()}/triggers`)
+      .set(auth())
+      .send({ scrollDepth: 500 })
+      .expect(400);
+    await request(app.getHttpServer())
+      .put(`${base()}/targeting`)
+      .set(auth())
+      .send({ rules: [{ mode: 'show', matchType: 'regex', pattern: '([' }] })
+      .expect(400);
+
+    // The draft edits do not change published until publish. (An earlier test
+    // in this suite already published once, so published holds the prior
+    // permissive defaults — not these new drafts — at this point.)
+    const beforePublish = await request(app.getHttpServer())
+      .get(`${base()}/theme`)
+      .set(auth())
+      .expect(200);
+    expect((beforePublish.body as ThemeView).targeting.published).toEqual({
+      defaultShow: true,
+      rules: [],
+    });
+    expect((beforePublish.body as ThemeView).triggers.published).toEqual({
+      afterSeconds: null,
+      scrollDepth: null,
+      exitIntent: false,
+    });
+
+    // Publishing promotes theme + targeting + triggers together.
+    await request(app.getHttpServer())
+      .post(`${base()}/theme/publish`)
+      .set(auth())
+      .expect(201);
+    const afterPublish = await request(app.getHttpServer())
+      .get(`${base()}/theme`)
+      .set(auth())
+      .expect(200);
+    expect(
+      (afterPublish.body as ThemeView).targeting.published?.defaultShow,
+    ).toBe(false);
+    expect(
+      (afterPublish.body as ThemeView).targeting.published?.rules,
+    ).toHaveLength(2);
+    expect((afterPublish.body as ThemeView).triggers.published).toEqual({
+      afterSeconds: 15,
+      scrollDepth: 60,
+      exitIntent: true,
+    });
   });
 });
