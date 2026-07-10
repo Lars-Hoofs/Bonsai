@@ -25,6 +25,7 @@ import { CommonModule } from './common/common.module';
 import { ConnectorsModule } from './connectors/connectors.module';
 import { AuditLogModule } from './audit-log/audit-log.module';
 import { ChunksModule } from './chunks/chunks.module';
+import { SynonymsModule } from './synonyms/synonyms.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { ChunksModule } from './chunks/chunks.module';
     ConnectorsModule,
     AuditLogModule,
     ChunksModule,
+    SynonymsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],

@@ -9,6 +9,8 @@ import { ChunkingService } from '../src/knowledge/chunking/chunking.service';
 import { FakeEmbeddingProvider } from '../src/knowledge/embedding/fake-embedding.provider';
 import { IngestionService } from '../src/knowledge/ingestion/ingestion.service';
 import { RetrievalService } from '../src/rag/retrieval.service';
+import { SynonymsService } from '../src/synonyms/synonyms.service';
+import { AuditService } from '../src/audit/audit.service';
 import type { AppConfig } from '../src/config/config';
 import { runControlPlaneMigrations } from '../src/db/run-control-plane-migrations';
 import * as schema from '../src/db/schema';
@@ -228,6 +230,122 @@ describe('RAG hybrid retrieval', () => {
       const top = results[0];
       expect(top.text).toBe(MIDDLE_CHUNK);
       expect(top.expandedText).toBe(top.text);
+    });
+  });
+
+  describe('synonyms-boosted lexical retrieval (#23)', () => {
+    let synProjectId: string;
+    let synonyms: SynonymsService;
+    let boostedRetrieval: RetrievalService;
+
+    // Contains ONLY the alias word ('teruggestuurde'), never the term
+    // ('retourneren') the query below actually uses — so it can only be
+    // reached via FTS if the query is expanded with the alias.
+    const ALIAS_ONLY_TEXT =
+      'Wij accepteren teruggestuurde pakketten via het speciale formulier op onze webpagina voor klanten.';
+    const QUERY = 'kan ik iets retourneren bij jullie winkel';
+
+    beforeAll(async () => {
+      synProjectId = randomUUID();
+      synonyms = new SynonymsService(
+        tenantDb,
+        new AuditService(drizzle(pool, { schema })),
+      );
+      // RetrievalService with SynonymsService wired in.
+      boostedRetrieval = new RetrievalService(
+        tenantDb,
+        embedder,
+        undefined,
+        undefined,
+        synonyms,
+      );
+
+      await addChunkedDocument(
+        'Terugsturenbeleid',
+        [ALIAS_ONLY_TEXT],
+        synProjectId,
+      );
+    });
+
+    it('without a synonym configured, plainto_tsquery(TERM) does not match a chunk containing only the ALIAS', async () => {
+      // Exercises the exact FTS predicate RetrievalService issues, isolating
+      // the lexical side from vector-search noise (with a single chunk in
+      // the project, vector search alone always returns it regardless of
+      // relevance — see the dedicated project-scoping test above for that
+      // caveat). This directly proves the "no synonyms -> unexpanded query"
+      // contract at the SQL level.
+      const rows = await tenantDb.withTenant(
+        schemaName,
+        async (db) =>
+          (
+            await db.execute(sql`
+            SELECT 1 FROM chunks
+            WHERE project_id = ${synProjectId}
+              AND tsv @@ plainto_tsquery('dutch', ${QUERY})
+          `)
+          ).rows,
+      );
+      expect(rows).toHaveLength(0);
+    });
+
+    it('after creating a term->alias synonym, the same TERM query retrieves the ALIAS-only doc via expanded FTS', async () => {
+      await synonyms.create(
+        schemaName,
+        synProjectId,
+        { term: 'retourneren', aliases: ['teruggestuurde'] },
+        randomUUID(),
+        randomUUID(),
+      );
+
+      const results = await boostedRetrieval.retrieve(
+        schemaName,
+        synProjectId,
+        QUERY,
+      );
+      const titles = results.map((c) => c.documentTitle);
+      expect(titles).toContain('Terugsturenbeleid');
+
+      // Confirm it's the ALIAS word alone (appended by expandQuery, then
+      // OR-combined by RetrievalService via `tsquery || tsquery` — see its
+      // doc comment) that makes the chunk matchable, not the original TERM
+      // query on its own (re-verified not to match, same as the "before"
+      // test above).
+      const rows = await tenantDb.withTenant(
+        schemaName,
+        async (db) =>
+          (
+            await db.execute(sql`
+            SELECT 1 FROM chunks
+            WHERE project_id = ${synProjectId}
+              AND tsv @@ plainto_tsquery('dutch', 'teruggestuurde')
+          `)
+          ).rows,
+      );
+      expect(rows).toHaveLength(1);
+    });
+
+    it('expandQuery appends aliases only for terms present in the query, and is a no-op with no synonyms', async () => {
+      const noSynProjectId = randomUUID();
+      const expanded = await synonyms.expandQuery(
+        schemaName,
+        synProjectId,
+        'kan ik iets retourneren',
+      );
+      expect(expanded).toContain('teruggestuurde');
+
+      const unchanged = await synonyms.expandQuery(
+        schemaName,
+        synProjectId,
+        'wat zijn de openingstijden',
+      );
+      expect(unchanged).toBe('wat zijn de openingstijden');
+
+      const noSynonymsAtAll = await synonyms.expandQuery(
+        schemaName,
+        noSynProjectId,
+        'ik wil graag een retour aanvragen',
+      );
+      expect(noSynonymsAtAll).toBe('ik wil graag een retour aanvragen');
     });
   });
 });

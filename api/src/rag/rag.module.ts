@@ -4,6 +4,7 @@ import type { AppConfig } from '../config/config';
 import { TenancyModule } from '../tenancy/tenancy.module';
 import { EmbeddingModule } from '../knowledge/embedding/embedding.module';
 import { ConnectorsModule } from '../connectors/connectors.module';
+import { SynonymsModule } from '../synonyms/synonyms.module';
 import { RetrievalService } from './retrieval.service';
 import { AnswerService } from './answer.service';
 import { AnswerCacheService } from './answer-cache.service';
@@ -17,7 +18,7 @@ import type { RerankProvider } from './rerank-provider';
 import { HttpRerankProvider } from './http-rerank.provider';
 
 @Module({
-  imports: [TenancyModule, EmbeddingModule, ConnectorsModule],
+  imports: [TenancyModule, EmbeddingModule, ConnectorsModule, SynonymsModule],
   controllers: [RagController],
   providers: [
     RetrievalService,

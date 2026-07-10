@@ -7,6 +7,7 @@ import { EMBEDDING_PROVIDER } from '../knowledge/embedding/embedding-provider';
 import type { EmbeddingProvider } from '../knowledge/embedding/embedding-provider';
 import { NoopRerankProvider, RERANK_PROVIDER } from './rerank-provider';
 import type { RerankProvider } from './rerank-provider';
+import { SynonymsService } from '../synonyms/synonyms.service';
 
 /** Fallback used when RetrievalService is constructed directly (tests) without
  * an AppConfig — matches the config default (window=1). */
@@ -69,6 +70,7 @@ export class RetrievalService {
     @Inject(RERANK_PROVIDER)
     private readonly reranker: RerankProvider = new NoopRerankProvider(),
     @Optional() @Inject(APP_CONFIG) cfg?: AppConfig,
+    @Optional() private readonly synonyms?: SynonymsService,
   ) {
     this.retrievalWindow = cfg?.retrievalWindow ?? DEFAULT_RETRIEVAL_WINDOW;
   }
@@ -191,7 +193,34 @@ export class RetrievalService {
     const vecLiteral = `[${queryVec.join(',')}]`;
     const k = RetrievalService.RRF_K;
 
+    // Synonyms only ever WIDEN the lexical (FTS) query text — the vector
+    // side above already embedded the original `query` unchanged, and stays
+    // the single source of truth for semantic search. When no SynonymsService
+    // is wired in (e.g. tests constructing RetrievalService directly) or a
+    // project has no synonyms configured, `expandQuery` returns `query`
+    // unchanged, so `ftsTsQuery` below reduces to plain `plainto_tsquery(query)`
+    // — byte-for-byte identical to before this feature.
+    //
+    // `expandQuery` returns the original query text with matched synonyms'
+    // aliases APPENDED (per its documented contract). Note `plainto_tsquery`
+    // ANDs every lexeme together, so naively feeding the appended string
+    // straight into a single `plainto_tsquery` would require the alias
+    // word(s) to appear IN ADDITION TO every original query word in the same
+    // chunk — the opposite of what a synonym boost should do. Instead we
+    // extract just the appended alias suffix and OR its own
+    // `plainto_tsquery` (via Postgres's `tsquery || tsquery`) alongside the
+    // unmodified original query's `plainto_tsquery`: a chunk matches if it
+    // has ALL the original query's words, OR the alias word(s) alone.
+    const expanded = this.synonyms
+      ? await this.synonyms.expandQuery(schemaName, projectId, query)
+      : query;
+    const aliasSuffix =
+      expanded === query ? null : expanded.slice(query.length).trim();
+
     const rows = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const ftsTsQuery = aliasSuffix
+        ? sql`(plainto_tsquery(${cfg}::regconfig, ${query}) || plainto_tsquery(${cfg}::regconfig, ${aliasSuffix}))`
+        : sql`plainto_tsquery(${cfg}::regconfig, ${query})`;
       const r = await db.execute(sql`
         WITH q AS (SELECT ${vecLiteral}::shared.vector AS v),
         vec AS (
@@ -205,11 +234,11 @@ export class RetrievalService {
         fts AS (
           SELECT c.id,
                  row_number() OVER (
-                   ORDER BY ts_rank(c.tsv, plainto_tsquery(${cfg}::regconfig, ${query})) DESC
+                   ORDER BY ts_rank(c.tsv, ${ftsTsQuery}) DESC
                  ) AS rnk
           FROM chunks c
           WHERE c.project_id = ${projectId}
-            AND c.tsv @@ plainto_tsquery(${cfg}::regconfig, ${query})
+            AND c.tsv @@ ${ftsTsQuery}
           LIMIT ${candidates}
         )
         SELECT c.id AS chunk_id, c.document_id, c.ordinal, c.text,
