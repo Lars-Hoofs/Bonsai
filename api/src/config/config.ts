@@ -274,7 +274,82 @@ const schema = z.object({
   // implemented yet — see TesseractOcrProvider — but the cap is defined now
   // so it's already config-driven when that lands).
   OCR_MAX_PAGES: z.coerce.number().int().positive().default(20),
+  // Plan/tier limits (#50), self-managed — no billing provider required.
+  // Optional JSON object mapping a `tenants.plan` value to its limits, e.g.
+  // '{"starter":{"maxProjects":2,"maxSourcesPerProject":20,"maxMembers":3}}'.
+  // Any plan omitted from this map (or when the env var itself is unset)
+  // falls back to the built-in DEFAULT_PLAN_LIMITS below. A plan whose
+  // limits object sets a field to `null` (or the special "enterprise" plan,
+  // which is always unlimited) means "no limit" for that dimension.
+  PLAN_LIMITS_JSON: z.string().optional(),
 });
+
+// A `null` field means "no limit" for that dimension.
+export interface PlanLimits {
+  maxProjects: number | null;
+  maxSourcesPerProject: number | null;
+  maxMembers: number | null;
+}
+
+const UNLIMITED_PLAN_LIMITS: PlanLimits = {
+  maxProjects: null,
+  maxSourcesPerProject: null,
+  maxMembers: null,
+};
+
+// Built-in defaults, used for any plan not present in PLAN_LIMITS_JSON (or
+// when that env var is unset entirely). Deliberately generous for 'starter'
+// so existing tenants/tests (which default to plan 'starter') don't trip
+// these limits; enforcement itself is proven via a dedicated test suite
+// (test/plan-limits.e2e.integration.spec.ts) that overrides PLAN_LIMITS_JSON
+// with a tight 'tiny' plan and assigns it to a specific test tenant.
+// maxMembers in particular is 10 (rather than a lower "typical starter"
+// number) because test/conversations.e2e.integration.spec.ts's agent-
+// presence suite accumulates 6 non-owner members (5 agents + 1 viewer) on a
+// single tenant across its test cases.
+export const DEFAULT_PLAN_LIMITS: Record<string, PlanLimits> = {
+  starter: { maxProjects: 2, maxSourcesPerProject: 20, maxMembers: 10 },
+  pro: { maxProjects: 20, maxSourcesPerProject: 200, maxMembers: 20 },
+  enterprise: { ...UNLIMITED_PLAN_LIMITS },
+};
+
+const planLimitsSchema = z.record(
+  z.string(),
+  z.object({
+    maxProjects: z.number().int().positive().nullable().optional(),
+    maxSourcesPerProject: z.number().int().positive().nullable().optional(),
+    maxMembers: z.number().int().positive().nullable().optional(),
+  }),
+);
+
+function parsePlanLimits(raw: string | undefined): Record<string, PlanLimits> {
+  if (!raw) return DEFAULT_PLAN_LIMITS;
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      'Invalid configuration: PLAN_LIMITS_JSON is not valid JSON',
+    );
+  }
+  const r = planLimitsSchema.safeParse(parsedJson);
+  if (!r.success) {
+    throw new Error(
+      `Invalid configuration: PLAN_LIMITS_JSON: ${r.error.issues
+        .map((i) => `${i.path.join('.')}: ${i.message}`)
+        .join('; ')}`,
+    );
+  }
+  const merged: Record<string, PlanLimits> = { ...DEFAULT_PLAN_LIMITS };
+  for (const [plan, limits] of Object.entries(r.data)) {
+    merged[plan] = {
+      maxProjects: limits.maxProjects ?? null,
+      maxSourcesPerProject: limits.maxSourcesPerProject ?? null,
+      maxMembers: limits.maxMembers ?? null,
+    };
+  }
+  return merged;
+}
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
   if (!raw) return undefined;
@@ -363,6 +438,7 @@ export interface AppConfig {
   ocrEnabled: boolean;
   ocrLanguages: string;
   ocrMaxPages: number;
+  planLimits: Record<string, PlanLimits>;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -444,5 +520,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     ocrEnabled: d.OCR_ENABLED,
     ocrLanguages: d.OCR_LANGUAGES,
     ocrMaxPages: d.OCR_MAX_PAGES,
+    planLimits: parsePlanLimits(d.PLAN_LIMITS_JSON),
   };
 }

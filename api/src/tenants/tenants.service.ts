@@ -12,6 +12,7 @@ import { DB } from '../db/db.module';
 import type { Db } from '../db/db.module';
 import { memberships, tenants, users } from '../db/schema';
 import type { Role } from '../db/schema';
+import { PlanLimitsService } from '../plan-limits/plan-limits.service';
 import { TenantProvisioningService } from '../tenancy/tenant-provisioning.service';
 
 @Injectable()
@@ -21,6 +22,7 @@ export class TenantsService {
     private readonly provisioning: TenantProvisioningService,
     private readonly membershipsService: MembershipsService,
     private readonly audit: AuditService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
   async create(
@@ -86,6 +88,7 @@ export class TenantsService {
       throw new NotFoundException(
         `No user with email ${email} — they must log in once first`,
       );
+    await this.planLimits.assertCanAddMember(tenantId);
     await this.db.transaction(async (tx) => {
       await this.membershipsService.add(tenantId, user.id, role, tx);
       await this.audit.record(

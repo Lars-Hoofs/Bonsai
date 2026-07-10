@@ -168,4 +168,72 @@ describe('loadConfig', () => {
       loadConfig({ ...valid, WHISPER_ENDPOINT: 'not-a-url' }),
     ).toThrow(/WHISPER_ENDPOINT/);
   });
+
+  it('defaults planLimits to the built-in map when PLAN_LIMITS_JSON is unset', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.planLimits.starter).toEqual({
+      maxProjects: 2,
+      maxSourcesPerProject: 20,
+      maxMembers: 10,
+    });
+    expect(cfg.planLimits.pro).toEqual({
+      maxProjects: 20,
+      maxSourcesPerProject: 200,
+      maxMembers: 20,
+    });
+    expect(cfg.planLimits.enterprise).toEqual({
+      maxProjects: null,
+      maxSourcesPerProject: null,
+      maxMembers: null,
+    });
+  });
+
+  it('overrides a single plan via PLAN_LIMITS_JSON while keeping other defaults', () => {
+    const cfg = loadConfig({
+      ...valid,
+      PLAN_LIMITS_JSON: JSON.stringify({
+        starter: { maxProjects: 1, maxSourcesPerProject: 5, maxMembers: 2 },
+      }),
+    });
+    expect(cfg.planLimits.starter).toEqual({
+      maxProjects: 1,
+      maxSourcesPerProject: 5,
+      maxMembers: 2,
+    });
+    // 'pro' wasn't in the override, so it keeps the built-in default.
+    expect(cfg.planLimits.pro).toEqual({
+      maxProjects: 20,
+      maxSourcesPerProject: 200,
+      maxMembers: 20,
+    });
+  });
+
+  it('treats a null field in PLAN_LIMITS_JSON as unlimited', () => {
+    const cfg = loadConfig({
+      ...valid,
+      PLAN_LIMITS_JSON: JSON.stringify({
+        custom: { maxProjects: null, maxSourcesPerProject: 10, maxMembers: 5 },
+      }),
+    });
+    expect(cfg.planLimits.custom).toEqual({
+      maxProjects: null,
+      maxSourcesPerProject: 10,
+      maxMembers: 5,
+    });
+  });
+
+  it('throws on invalid PLAN_LIMITS_JSON (not valid JSON)', () => {
+    expect(() =>
+      loadConfig({ ...valid, PLAN_LIMITS_JSON: '{not json' }),
+    ).toThrow(/PLAN_LIMITS_JSON/);
+  });
+
+  it('throws on PLAN_LIMITS_JSON with the wrong shape', () => {
+    expect(() =>
+      loadConfig({
+        ...valid,
+        PLAN_LIMITS_JSON: JSON.stringify({ starter: { maxProjects: 'two' } }),
+      }),
+    ).toThrow(/PLAN_LIMITS_JSON/);
+  });
 });

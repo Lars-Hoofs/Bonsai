@@ -29,6 +29,7 @@ import { SynonymsModule } from './synonyms/synonyms.module';
 import { MailModule } from './mail/mail.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { RagDebugModule } from './rag/debug/rag-debug.module';
+import { PlanLimitsModule } from './plan-limits/plan-limits.module';
 
 @Module({
   imports: [
@@ -59,6 +60,7 @@ import { RagDebugModule } from './rag/debug/rag-debug.module';
     MailModule,
     InvitationsModule,
     RagDebugModule,
+    PlanLimitsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],

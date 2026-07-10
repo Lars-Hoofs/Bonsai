@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { AuditService } from '../audit/audit.service';
+import { PlanLimitsService } from '../plan-limits/plan-limits.service';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 
 export interface Project {
@@ -30,13 +31,15 @@ export class ProjectsService {
   constructor(
     private readonly tenantDb: TenantDbService,
     private readonly audit: AuditService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
-  create(
-    schemaName: string,
+  async create(
+    tenant: { id: string; schemaName: string },
     input: { name: string; defaultLanguage?: string },
   ): Promise<Project> {
-    return this.tenantDb.withTenant(schemaName, async (db) => {
+    await this.planLimits.assertCanCreateProject(tenant.id, tenant.schemaName);
+    return this.tenantDb.withTenant(tenant.schemaName, async (db) => {
       const r = await db.execute(sql`
         INSERT INTO projects (name, default_language)
         VALUES (${input.name}, ${input.defaultLanguage ?? 'nl'})
