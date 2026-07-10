@@ -176,6 +176,20 @@ const schema = z.object({
     .default('true')
     .transform((v) => v === 'true'),
   NEAR_DUP_THRESHOLD: z.coerce.number().gt(0).lte(1).default(0.97),
+  // Frustration/sentiment auto-escalation (#24): when a bot-driven
+  // conversation shows signs of visitor frustration (explicit request for a
+  // human, negative sentiment, or a run of consecutive bot refusals), the
+  // conversation is automatically escalated to the existing handover flow
+  // instead of waiting for the visitor to hit `escalate` themselves. On by
+  // default.
+  FRUSTRATION_AUTO_ESCALATE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // Number of consecutive trailing bot refusals (most-recent-first,
+  // including the answer just computed) that counts as a frustration signal
+  // on its own, even without explicit negative wording.
+  FRUSTRATION_REFUSAL_STREAK: z.coerce.number().int().positive().default(2),
 });
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
@@ -243,6 +257,8 @@ export interface AppConfig {
   toolCallingEnabled: boolean;
   dedupEnabled: boolean;
   nearDupThreshold: number;
+  frustrationAutoEscalateEnabled: boolean;
+  frustrationRefusalStreak: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -302,5 +318,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     toolCallingEnabled: d.TOOL_CALLING_ENABLED,
     dedupEnabled: d.DEDUP_ENABLED,
     nearDupThreshold: d.NEAR_DUP_THRESHOLD,
+    frustrationAutoEscalateEnabled: d.FRUSTRATION_AUTO_ESCALATE_ENABLED,
+    frustrationRefusalStreak: d.FRUSTRATION_REFUSAL_STREAK,
   };
 }

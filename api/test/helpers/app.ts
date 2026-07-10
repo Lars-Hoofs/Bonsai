@@ -44,6 +44,10 @@ export async function buildTestApp(
     // rather than every test hitting the "ENCRYPTION_KEY not configured"
     // error path.
     encryptionKey: Buffer.alloc(32, 42),
+    dedupEnabled: true,
+    nearDupThreshold: 0.97,
+    frustrationAutoEscalateEnabled: true,
+    frustrationRefusalStreak: 2,
     ...cfgOverrides,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })

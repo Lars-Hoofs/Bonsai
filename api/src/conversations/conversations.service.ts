@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
+  Inject,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -13,9 +14,12 @@ import { UsageService } from '../usage/usage.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { AuditService } from '../audit/audit.service';
 import { PresenceService } from '../presence/presence.service';
+import { APP_CONFIG } from '../config/config';
+import type { AppConfig } from '../config/config';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
 import { isOpen } from './business-hours';
 import type { BusinessHours } from './business-hours';
+import { isFrustrated } from './frustration';
 
 const DEFAULT_HANDOVER_MESSAGE = 'Gesprek doorgezet naar een medewerker.';
 const DEFAULT_AFTER_HOURS_MESSAGE =
@@ -102,6 +106,7 @@ export class ConversationsService {
     private readonly metrics: MetricsService,
     private readonly presence: PresenceService,
     private readonly audit: AuditService,
+    @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
   private emit(
@@ -142,6 +147,16 @@ export class ConversationsService {
    * answer pipeline, persists the bot reply + citations, and surfaces whether
    * escalation to a human is suggested (low-confidence refusal). When the
    * conversation is already in handover, the message is stored for the agent.
+   *
+   * Frustration/sentiment auto-escalation (#24): after the bot answer is
+   * stored, if the conversation is still bot-driven and
+   * `frustrationAutoEscalateEnabled`, checks whether the visitor's latest
+   * message (or a run of consecutive bot refusals ending in this answer)
+   * signals frustration and, if so, auto-escalates via the existing
+   * `escalate` flow (same handover row / system message / business-hours
+   * behavior as a visitor-initiated escalate). The bot's answer is still
+   * returned to the visitor either way — auto-escalation only additionally
+   * flips the conversation to handover and is surfaced via `autoEscalated`.
    */
   async postVisitorMessage(
     tenantId: string,
@@ -157,6 +172,7 @@ export class ConversationsService {
       confidence: number;
       refused: boolean;
       escalationSuggested: boolean;
+      autoEscalated: boolean;
       citations: { documentTitle: string; documentId: string }[];
     };
   }> {
@@ -203,19 +219,76 @@ export class ConversationsService {
     });
     this.emit(tenantId, projectId, conversationId, 'bot', answer.answer);
 
+    let autoEscalated = false;
+    let status = 'bot';
+    if (this.cfg.frustrationAutoEscalateEnabled) {
+      const consecutiveRefusals = await this.countTrailingRefusedBotMessages(
+        schemaName,
+        conversationId,
+      );
+      if (
+        isFrustrated({
+          latestVisitorText: text,
+          consecutiveRefusals,
+          refusalStreakThreshold: this.cfg.frustrationRefusalStreak,
+        })
+      ) {
+        await this.escalate(
+          tenantId,
+          schemaName,
+          projectId,
+          conversationId,
+          'auto: frustration',
+          visitorSecret,
+        );
+        autoEscalated = true;
+        status = 'handover';
+      }
+    }
+
     return {
-      status: 'bot',
+      status,
       reply: {
         content: answer.answer,
         confidence: answer.confidence,
         refused: answer.refused,
         escalationSuggested: answer.escalationSuggested,
+        autoEscalated,
         citations: answer.citations.map((c) => ({
           documentTitle: c.documentTitle,
           documentId: c.documentId,
         })),
       },
     };
+  }
+
+  /**
+   * Counts the leading run of `refused = true` bot messages, most-recent
+   * first, over the last ~10 bot messages in the conversation (small bound so
+   * this stays a cheap indexed lookup, not an unbounded scan). This is the
+   * "consecutive refusal streak" used by the frustration heuristic — it
+   * naturally resets to 0 as soon as a non-refused bot answer is found,
+   * since the run stops there.
+   */
+  private async countTrailingRefusedBotMessages(
+    schemaName: string,
+    conversationId: string,
+  ): Promise<number> {
+    const rows = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT refused FROM messages
+            WHERE conversation_id = ${conversationId} AND role = 'bot'
+            ORDER BY created_at DESC
+            LIMIT 10`,
+      );
+      return r.rows as { refused: boolean }[];
+    });
+    let count = 0;
+    for (const row of rows) {
+      if (!row.refused) break;
+      count++;
+    }
+    return count;
   }
 
   async escalate(
