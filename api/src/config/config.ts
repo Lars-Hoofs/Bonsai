@@ -100,6 +100,24 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Multi-turn conversational context (#27): when a question arrives with
+  // recent conversation history, an extra LLM call condenses the (possibly
+  // elliptical/follow-up) question into a standalone query for retrieval, and
+  // the prior turns are additionally included as context in the answer
+  // prompt. Global default; can be overridden per project via
+  // `settings.multiTurnContextEnabled`. On by default; only ever engages when
+  // a REAL llm is configured (LLM_API_URL) AND non-empty history is passed —
+  // with only the fake LLM (tests/dev) or no history, behavior is identical to
+  // single-turn (standalone query === question, no history in the prompt),
+  // regardless of this flag.
+  MULTI_TURN_CONTEXT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // Max number of most-recent prior conversation turns fed into the
+  // condense-query call and the answer prompt when multi-turn context is
+  // active (#27). Bounds prompt size/cost; older turns are dropped.
+  MULTI_TURN_MAX_TURNS: z.coerce.number().int().positive().default(6),
   // Parent-child retrieval (A6): context-window expansion. The reranker/top-k
   // selection still runs on the small embedded chunk (precision), but each
   // returned chunk also carries `expandedText` — that chunk plus up to
@@ -265,6 +283,8 @@ export interface AppConfig {
   selfCheckEnabled: boolean;
   verificationMode: 'self-check' | 'claim-nli';
   multiQueryEnabled: boolean;
+  multiTurnContextEnabled: boolean;
+  multiTurnMaxTurns: number;
   retrievalWindow: number;
   billingEnabled: boolean;
   widgetCorsOrigins: string[];
@@ -332,6 +352,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
     verificationMode: d.VERIFICATION_MODE,
     multiQueryEnabled: d.MULTI_QUERY_ENABLED,
+    multiTurnContextEnabled: d.MULTI_TURN_CONTEXT_ENABLED,
+    multiTurnMaxTurns: d.MULTI_TURN_MAX_TURNS,
     retrievalWindow: d.RETRIEVAL_WINDOW,
     billingEnabled: d.BILLING_ENABLED,
     widgetCorsOrigins: d.WIDGET_CORS_ORIGINS.split(',')

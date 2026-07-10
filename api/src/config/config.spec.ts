@@ -30,6 +30,28 @@ describe('loadConfig', () => {
     expect(cfg.multiQueryEnabled).toBe(false);
   });
 
+  it('defaults multiTurnContextEnabled to true and multiTurnMaxTurns to 6', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.multiTurnContextEnabled).toBe(true);
+    expect(cfg.multiTurnMaxTurns).toBe(6);
+  });
+
+  it('parses MULTI_TURN_CONTEXT_ENABLED=false', () => {
+    const cfg = loadConfig({ ...valid, MULTI_TURN_CONTEXT_ENABLED: 'false' });
+    expect(cfg.multiTurnContextEnabled).toBe(false);
+  });
+
+  it('parses MULTI_TURN_MAX_TURNS', () => {
+    const cfg = loadConfig({ ...valid, MULTI_TURN_MAX_TURNS: '10' });
+    expect(cfg.multiTurnMaxTurns).toBe(10);
+  });
+
+  it('rejects a non-positive MULTI_TURN_MAX_TURNS', () => {
+    expect(() => loadConfig({ ...valid, MULTI_TURN_MAX_TURNS: '0' })).toThrow(
+      /MULTI_TURN_MAX_TURNS/,
+    );
+  });
+
   it('defaults retrievalWindow to 1', () => {
     const cfg = loadConfig(valid);
     expect(cfg.retrievalWindow).toBe(1);

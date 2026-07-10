@@ -9,6 +9,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { AnswerService } from '../rag/answer.service';
+import type { ConversationTurn } from '../rag/answer.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { UsageService } from '../usage/usage.service';
 import { MetricsService } from '../metrics/metrics.service';
@@ -182,6 +183,17 @@ export class ConversationsService {
       conversationId,
       visitorSecret,
     );
+    // Multi-turn context (#27): snapshot the visitor<->bot exchange SO FAR,
+    // before this new visitor message is stored, so the answer pipeline can
+    // condense a follow-up into a standalone retrieval query and see prior
+    // turns as context. Read before the insert to naturally exclude the
+    // current message. The AnswerService is what actually gates on the
+    // per-project/global multiTurnContextEnabled flag; passing history is
+    // always safe (empty/single-turn behavior is preserved when disabled).
+    const history = await this.loadConversationHistory(
+      schemaName,
+      conversationId,
+    );
     await this.insertMessage(schemaName, conversationId, {
       role: 'visitor',
       content: text,
@@ -197,7 +209,12 @@ export class ConversationsService {
     // requests can't all slip through on a stale read (TOCTOU).
     await this.usage.reserveAnswer(tenantId);
     const started = Date.now();
-    const answer = await this.answers.answer(schemaName, projectId, text);
+    const answer = await this.answers.answer(
+      schemaName,
+      projectId,
+      text,
+      history,
+    );
     const latency = Date.now() - started;
 
     await this.tenantDb.withTenant(schemaName, async (db) => {
@@ -270,6 +287,34 @@ export class ConversationsService {
    * naturally resets to 0 as soon as a non-refused bot answer is found,
    * since the run stops there.
    */
+  /**
+   * Loads the recent visitor<->bot exchange for multi-turn context (#27),
+   * oldest-first. Only `visitor` and `bot` roles are included (the model
+   * never sees agent/system messages), and the result is capped to the most
+   * recent `multiTurnMaxTurns` turns to bound prompt size/cost. Returns `[]`
+   * for a brand-new conversation, which makes the AnswerService behave exactly
+   * as single-turn.
+   */
+  private async loadConversationHistory(
+    schemaName: string,
+    conversationId: string,
+  ): Promise<ConversationTurn[]> {
+    const limit = this.cfg.multiTurnMaxTurns;
+    const rows = await this.tenantDb.withTenant(schemaName, async (db) => {
+      // Take the most-recent `limit` visitor/bot messages (DESC), then
+      // reverse to oldest-first below so the model reads them chronologically.
+      const r = await db.execute(
+        sql`SELECT role, content FROM messages
+            WHERE conversation_id = ${conversationId}
+              AND role IN ('visitor', 'bot')
+            ORDER BY created_at DESC
+            LIMIT ${limit}`,
+      );
+      return r.rows as { role: 'visitor' | 'bot'; content: string }[];
+    });
+    return rows.reverse().map((r) => ({ role: r.role, content: r.content }));
+  }
+
   private async countTrailingRefusedBotMessages(
     schemaName: string,
     conversationId: string,

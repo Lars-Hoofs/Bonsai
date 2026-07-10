@@ -36,6 +36,8 @@ export async function buildTestApp(
     selfCheckEnabled: true,
     verificationMode: 'self-check',
     multiQueryEnabled: true,
+    multiTurnContextEnabled: true,
+    multiTurnMaxTurns: 6,
     retrievalWindow: 1,
     billingEnabled: true,
     widgetCorsOrigins: [],
