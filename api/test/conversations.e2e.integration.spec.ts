@@ -330,3 +330,279 @@ describe('conversations + handover e2e', () => {
     expect((reEscalated.body as EscalateBody).afterHours).toBe(true);
   });
 });
+
+interface ConversationSummaryBody {
+  id: string;
+  assignedAgentId: string | null;
+}
+
+describe('agent presence + conversation assignment e2e (#21)', () => {
+  let container: StartedPostgreSqlContainer;
+  let pool: Pool;
+  let app: INestApplication;
+  let idp: TestIdp;
+  let ownerToken: string;
+  let tenantId: string;
+  let projectId: string;
+  let widgetKey: string;
+
+  const agentBase = (): string =>
+    `/v1/tenants/${tenantId}/projects/${projectId}/conversations`;
+  const presenceUrl = (): string =>
+    `/v1/tenants/${tenantId}/agents/me/presence`;
+  const widgetBase = '/v1/widget/conversations';
+  const ownerAuth = (): { Authorization: string } => ({
+    Authorization: `Bearer ${ownerToken}`,
+  });
+  const bearer = (token: string): { Authorization: string } => ({
+    Authorization: `Bearer ${token}`,
+  });
+
+  async function makeAgent(email: string, sub: string): Promise<string> {
+    const token = await idp.sign({ sub, email });
+    // Any authenticated call upserts the user row so they can be added as a
+    // member by email.
+    await request(app.getHttpServer())
+      .get('/v1/tenants')
+      .set(bearer(token))
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/members`)
+      .set(ownerAuth())
+      .send({ email, role: 'agent' })
+      .expect(201);
+    return token;
+  }
+
+  async function escalateNewConversation(): Promise<{
+    conversationId: string;
+  }> {
+    const started = await request(app.getHttpServer())
+      .post(widgetBase)
+      .set('x-bonsai-key', widgetKey)
+      .send({ language: 'nl' })
+      .expect(201);
+    const { id: conversationId, visitorSecret } = started.body as {
+      id: string;
+      visitorSecret: string;
+    };
+    await request(app.getHttpServer())
+      .post(`${widgetBase}/${conversationId}/escalate`)
+      .set('x-bonsai-key', widgetKey)
+      .set('x-bonsai-visitor-secret', visitorSecret)
+      .send({ reason: 'visitor_request' })
+      .expect(201);
+    return { conversationId };
+  }
+
+  beforeAll(async () => {
+    ({ container, pool } = await startPg());
+    ({ app, idp } = await buildTestApp(pool));
+    ownerToken = await idp.sign({
+      sub: 'oidc|owner21',
+      email: 'owner21@acme.eu',
+    });
+    const t = await request(app.getHttpServer())
+      .post('/v1/tenants')
+      .set(ownerAuth())
+      .send({ name: 'Acme21', slug: 'acme-21' })
+      .expect(201);
+    tenantId = (t.body as IdBody).id;
+    const p = await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/projects`)
+      .set(ownerAuth())
+      .send({ name: 'Bot21' })
+      .expect(201);
+    projectId = (p.body as IdBody).id;
+    const key = await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/api-keys`)
+      .set(ownerAuth())
+      .send({ name: 'widget21', kind: 'public_widget', projectId })
+      .expect(201);
+    widgetKey = (key.body as { key: string }).key;
+  }, 120000);
+
+  afterAll(async () => {
+    await app.close();
+    await container.stop();
+  });
+
+  it('auto-assigns a new escalation to the available agent, not the away one', async () => {
+    const availableToken = await makeAgent(
+      'available1@acme.eu',
+      'oidc|available1',
+    );
+    const awayToken = await makeAgent('away1@acme.eu', 'oidc|away1');
+
+    await request(app.getHttpServer())
+      .put(presenceUrl())
+      .set(bearer(availableToken))
+      .send({ status: 'available' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .put(presenceUrl())
+      .set(bearer(awayToken))
+      .send({ status: 'away' })
+      .expect(200);
+
+    const { conversationId } = await escalateNewConversation();
+
+    const view = await request(app.getHttpServer())
+      .get(`${agentBase()}/${conversationId}`)
+      .set(ownerAuth())
+      .expect(200);
+    const convo = (view.body as { conversation: ConversationSummaryBody })
+      .conversation;
+
+    // Must be assigned to the available agent, and specifically not the
+    // away one (asserted via the inbox filter below too).
+    expect(convo.assignedAgentId).not.toBeNull();
+
+    const inboxMe = await request(app.getHttpServer())
+      .get(`${agentBase()}?status=handover&assignee=me`)
+      .set(bearer(availableToken))
+      .expect(200);
+    expect(
+      (inboxMe.body as ConversationSummaryBody[]).map((c) => c.id),
+    ).toContain(conversationId);
+
+    const inboxAway = await request(app.getHttpServer())
+      .get(`${agentBase()}?status=handover&assignee=me`)
+      .set(bearer(awayToken))
+      .expect(200);
+    expect(
+      (inboxAway.body as ConversationSummaryBody[]).map((c) => c.id),
+    ).not.toContain(conversationId);
+  });
+
+  it('assigns to the least-busy of two available agents', async () => {
+    const busyToken = await makeAgent('busy2@acme.eu', 'oidc|busy2');
+    const freeToken = await makeAgent('free2@acme.eu', 'oidc|free2');
+
+    await request(app.getHttpServer())
+      .put(presenceUrl())
+      .set(bearer(busyToken))
+      .send({ status: 'available' })
+      .expect(200);
+
+    // Give the busy agent an existing open assigned conversation before the
+    // free agent comes online, by escalating while only busyToken is
+    // available, then claiming it.
+    const { conversationId: existing } = await escalateNewConversation();
+    await request(app.getHttpServer())
+      .post(`${agentBase()}/${existing}/assign`)
+      .set(bearer(busyToken))
+      .send({})
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .put(presenceUrl())
+      .set(bearer(freeToken))
+      .send({ status: 'available' })
+      .expect(200);
+
+    const { conversationId: fresh } = await escalateNewConversation();
+    const view = await request(app.getHttpServer())
+      .get(`${agentBase()}/${fresh}`)
+      .set(ownerAuth())
+      .expect(200);
+    const convo = (view.body as { conversation: ConversationSummaryBody })
+      .conversation;
+    expect(convo.assignedAgentId).not.toBeNull();
+
+    const inboxFree = await request(app.getHttpServer())
+      .get(`${agentBase()}?status=handover&assignee=me`)
+      .set(bearer(freeToken))
+      .expect(200);
+    expect(
+      (inboxFree.body as ConversationSummaryBody[]).map((c) => c.id),
+    ).toContain(fresh);
+
+    const inboxBusy = await request(app.getHttpServer())
+      .get(`${agentBase()}?status=handover&assignee=me`)
+      .set(bearer(busyToken))
+      .expect(200);
+    expect(
+      (inboxBusy.body as ConversationSummaryBody[]).map((c) => c.id),
+    ).not.toContain(fresh);
+  });
+
+  it('lets an agent claim an unassigned conversation and audits conversation.assigned', async () => {
+    // Mark every agent made available by earlier tests in this describe
+    // block as away, so this escalation has no one to auto-assign to.
+    await pool.query(
+      `UPDATE agent_presence SET status = 'away' WHERE tenant_id = $1`,
+      [tenantId],
+    );
+
+    // No one available -> escalation lands unassigned.
+    const { conversationId } = await escalateNewConversation();
+
+    const claimerToken = await makeAgent('claimer3@acme.eu', 'oidc|claimer3');
+
+    const unassignedBefore = await request(app.getHttpServer())
+      .get(`${agentBase()}?status=handover&assignee=unassigned`)
+      .set(ownerAuth())
+      .expect(200);
+    expect(
+      (unassignedBefore.body as ConversationSummaryBody[]).map((c) => c.id),
+    ).toContain(conversationId);
+
+    const claimed = await request(app.getHttpServer())
+      .post(`${agentBase()}/${conversationId}/assign`)
+      .set(bearer(claimerToken))
+      .send({})
+      .expect(201);
+    expect((claimed.body as ConversationSummaryBody).assignedAgentId).toEqual(
+      expect.any(String),
+    );
+
+    const auditRows = await pool.query<{
+      metadata: { assignedAgentId: string };
+    }>(
+      `SELECT metadata FROM audit_log WHERE action = 'conversation.assigned' AND resource = $1`,
+      [`conversation:${conversationId}`],
+    );
+    expect(auditRows.rowCount).toBe(1);
+    expect(auditRows.rows[0].metadata.assignedAgentId).toBe(
+      (claimed.body as ConversationSummaryBody).assignedAgentId,
+    );
+
+    const unassignedAfter = await request(app.getHttpServer())
+      .get(`${agentBase()}?status=handover&assignee=unassigned`)
+      .set(ownerAuth())
+      .expect(200);
+    expect(
+      (unassignedAfter.body as ConversationSummaryBody[]).map((c) => c.id),
+    ).not.toContain(conversationId);
+  });
+
+  it('rejects presence + assign for a viewer (403)', async () => {
+    const viewerToken = await idp.sign({
+      sub: 'oidc|viewer4',
+      email: 'viewer4@acme.eu',
+    });
+    await request(app.getHttpServer())
+      .get('/v1/tenants')
+      .set(bearer(viewerToken))
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/members`)
+      .set(ownerAuth())
+      .send({ email: 'viewer4@acme.eu', role: 'viewer' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .put(presenceUrl())
+      .set(bearer(viewerToken))
+      .send({ status: 'available' })
+      .expect(403);
+
+    const { conversationId } = await escalateNewConversation();
+    await request(app.getHttpServer())
+      .post(`${agentBase()}/${conversationId}/assign`)
+      .set(bearer(viewerToken))
+      .send({})
+      .expect(403);
+  });
+});

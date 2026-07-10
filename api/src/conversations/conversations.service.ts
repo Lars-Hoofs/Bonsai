@@ -11,6 +11,8 @@ import { AnswerService } from '../rag/answer.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { UsageService } from '../usage/usage.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { AuditService } from '../audit/audit.service';
+import { PresenceService } from '../presence/presence.service';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
 import { isOpen } from './business-hours';
 import type { BusinessHours } from './business-hours';
@@ -53,7 +55,15 @@ export interface ConversationSummary {
   language: string;
   startedAt: string;
   updatedAt: string;
+  assignedAgentId: string | null;
 }
+
+/**
+ * Optional inbox filter, already resolved to a concrete predicate by the
+ * caller (the controller resolves 'me' to the current user's id before
+ * calling in — the service itself has no notion of "the calling agent").
+ */
+export type AssigneeFilter = { userId: string } | 'unassigned';
 
 function generateVisitorSecret(): string {
   return randomBytes(32).toString('base64url');
@@ -90,6 +100,8 @@ export class ConversationsService {
     private readonly usage: UsageService,
     private readonly events: EventEmitter2,
     private readonly metrics: MetricsService,
+    private readonly presence: PresenceService,
+    private readonly audit: AuditService,
   ) {}
 
   private emit(
@@ -213,7 +225,7 @@ export class ConversationsService {
     conversationId: string,
     reason: string,
     visitorSecret: string,
-  ): Promise<{ afterHours: boolean }> {
+  ): Promise<{ afterHours: boolean; assignedAgentId: string | null }> {
     const convo = await this.requireConversationForVisitor(
       schemaName,
       projectId,
@@ -226,7 +238,10 @@ export class ConversationsService {
     if (convo.status === 'handover') {
       const settings = await this.loadProjectSettings(schemaName, projectId);
       const { businessHours } = readBusinessHoursSettings(settings);
-      return { afterHours: !isOpen(businessHours, new Date()) };
+      return {
+        afterHours: !isOpen(businessHours, new Date()),
+        assignedAgentId: convo.assignedAgentId,
+      };
     }
 
     const settings = await this.loadProjectSettings(schemaName, projectId);
@@ -243,12 +258,23 @@ export class ConversationsService {
     // visible to anyone inspecting the handover record.
     const storedReason = afterHours ? `${reason} (after-hours)` : reason;
 
+    // Auto-assignment (#21): pick the least-busy currently-available agent
+    // (fewest open handover conversations already assigned to them in this
+    // tenant), so new escalations don't pile up on whoever happened to be
+    // first available. If nobody is available, leave it unassigned — it
+    // still lands in the inbox for anyone to claim via `assign`.
+    const assignedAgentId = await this.pickLeastBusyAgent(
+      tenantId,
+      schemaName,
+      projectId,
+    );
+
     await this.tenantDb.withTenant(schemaName, async (db) => {
       await db.execute(
-        sql`UPDATE conversations SET status='handover', updated_at=now() WHERE id=${conversationId}`,
+        sql`UPDATE conversations SET status='handover', assigned_agent_id=${assignedAgentId}, updated_at=now() WHERE id=${conversationId}`,
       );
       await db.execute(
-        sql`INSERT INTO handovers (conversation_id, reason) VALUES (${conversationId}, ${storedReason})`,
+        sql`INSERT INTO handovers (conversation_id, agent_user_id, reason) VALUES (${conversationId}, ${assignedAgentId}, ${storedReason})`,
       );
       await db.execute(
         sql`INSERT INTO messages (conversation_id, role, content)
@@ -265,9 +291,88 @@ export class ConversationsService {
         conversationId,
         reason: storedReason,
         afterHours,
+        assignedAgentId,
       },
     );
-    return { afterHours };
+    return { afterHours, assignedAgentId };
+  }
+
+  /**
+   * Picks the least-busy available agent: among users PresenceService
+   * reports as available (fresh + role >= agent), the one currently
+   * assigned the fewest open (`status='handover'`) conversations in this
+   * project's tenant schema. Returns null when no one is available.
+   */
+  private async pickLeastBusyAgent(
+    tenantId: string,
+    schemaName: string,
+    projectId: string,
+  ): Promise<string | null> {
+    const available = await this.presence.listAvailable(tenantId);
+    if (available.length === 0) return null;
+    if (available.length === 1) return available[0];
+
+    const counts = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT assigned_agent_id, count(*) AS open_count
+            FROM conversations
+            WHERE project_id = ${projectId}
+              AND status = 'handover'
+              AND assigned_agent_id IS NOT NULL
+            GROUP BY assigned_agent_id`,
+      );
+      return r.rows as { assigned_agent_id: string; open_count: string }[];
+    });
+    const openCountByAgent = new Map<string, number>(
+      counts.map((row) => [row.assigned_agent_id, Number(row.open_count)]),
+    );
+
+    let best = available[0];
+    let bestCount = openCountByAgent.get(best) ?? 0;
+    for (const candidate of available.slice(1)) {
+      const count = openCountByAgent.get(candidate) ?? 0;
+      if (count < bestCount) {
+        best = candidate;
+        bestCount = count;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Claims or reassigns a conversation to `agentUserId` (self-claim when the
+   * caller assigns themselves). Audits `conversation.assigned`.
+   */
+  async assign(
+    tenantId: string,
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    agentUserId: string,
+    actorUserId: string,
+  ): Promise<ConversationSummary> {
+    await this.requireConversation(schemaName, projectId, conversationId);
+    const row = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`UPDATE conversations SET assigned_agent_id=${agentUserId}, updated_at=now()
+            WHERE id=${conversationId} AND project_id=${projectId}
+            RETURNING *`,
+      );
+      const updated = r.rows[0];
+      if (!updated) throw new NotFoundException('Conversation not found');
+      await this.audit.record(
+        {
+          tenantId,
+          actorUserId,
+          action: 'conversation.assigned',
+          resource: `conversation:${conversationId}`,
+          metadata: { assignedAgentId: agentUserId },
+        },
+        db,
+      );
+      return updated;
+    });
+    return this.mapConversation(row);
   }
 
   private async loadProjectSettings(
@@ -288,10 +393,17 @@ export class ConversationsService {
     schemaName: string,
     projectId: string,
     status: string,
+    assignee?: AssigneeFilter,
   ): Promise<ConversationSummary[]> {
     return this.tenantDb.withTenant(schemaName, async (db) => {
+      const assigneeClause =
+        assignee === 'unassigned'
+          ? sql`AND assigned_agent_id IS NULL`
+          : assignee !== undefined
+            ? sql`AND assigned_agent_id = ${assignee.userId}`
+            : sql``;
       const r = await db.execute(
-        sql`SELECT * FROM conversations WHERE project_id=${projectId} AND status=${status} ORDER BY updated_at DESC`,
+        sql`SELECT * FROM conversations WHERE project_id=${projectId} AND status=${status} ${assigneeClause} ORDER BY updated_at DESC`,
       );
       return r.rows.map((row) => this.mapConversation(row));
     });
@@ -469,6 +581,7 @@ export class ConversationsService {
       language: row.language as string,
       startedAt: String(row.started_at),
       updatedAt: String(row.updated_at),
+      assignedAgentId: (row.assigned_agent_id as string | null) ?? null,
     };
   }
 }

@@ -1,4 +1,4 @@
-import { IsOptional, IsString, Length } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsUUID, Length } from 'class-validator';
 
 export class StartConversationDto {
   @IsOptional() @IsString() @Length(1, 200) visitorId?: string;
@@ -15,4 +15,12 @@ export class EscalateDto {
 
 export class AgentMessageDto {
   @IsString() @Length(1, 4000) content!: string;
+}
+
+export class SetPresenceDto {
+  @IsIn(['available', 'away']) status!: 'available' | 'away';
+}
+
+export class AssignConversationDto {
+  @IsOptional() @IsUUID() agentUserId?: string;
 }

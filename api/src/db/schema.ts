@@ -69,6 +69,25 @@ export const apiKeys = pgTable('api_keys', {
     .defaultNow(),
 });
 
+export const agentPresence = pgTable(
+  'agent_presence',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: text('status', { enum: ['available', 'away'] })
+      .notNull()
+      .default('away'),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.tenantId, t.userId] })],
+);
+
 export const auditLog = pgTable('audit_log', {
   id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
   tenantId: uuid('tenant_id'),
