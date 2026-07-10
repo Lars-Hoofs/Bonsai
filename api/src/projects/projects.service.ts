@@ -9,6 +9,7 @@ export interface Project {
   defaultLanguage: string;
   status: string;
   settings: Record<string, unknown>;
+  retentionDays: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,6 +21,7 @@ function mapRow(r: Record<string, unknown>): Project {
     defaultLanguage: r.default_language as string,
     status: r.status as string,
     settings: r.settings as Record<string, unknown>,
+    retentionDays: (r.retention_days as number | null) ?? null,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
   };
@@ -67,8 +69,17 @@ export class ProjectsService {
   async update(
     schemaName: string,
     id: string,
-    input: { name?: string; defaultLanguage?: string },
+    input: {
+      name?: string;
+      defaultLanguage?: string;
+      retentionDays?: number | null;
+    },
   ): Promise<Project> {
+    // `retentionDays` distinguishes three cases: omitted (undefined) leaves
+    // the column unchanged; an explicit `null` clears the window (retain
+    // forever); a positive number sets it. The COALESCE fallback flag is
+    // false only when the key was actually provided.
+    const retentionProvided = input.retentionDays !== undefined;
     const rows = await this.tenantDb.withTenant(
       schemaName,
       async (db) =>
@@ -77,6 +88,8 @@ export class ProjectsService {
         UPDATE projects SET
           name = COALESCE(${input.name ?? null}, name),
           default_language = COALESCE(${input.defaultLanguage ?? null}, default_language),
+          retention_days = CASE WHEN ${retentionProvided}::boolean
+            THEN ${input.retentionDays ?? null}::integer ELSE retention_days END,
           updated_at = now()
         WHERE id = ${id} RETURNING *`)
         ).rows,

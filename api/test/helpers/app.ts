@@ -50,6 +50,7 @@ export async function buildTestApp(
     frustrationRefusalStreak: 2,
     costPer1kTokens: 0,
     estTokensPerAnswer: 1500,
+    retentionPurgeIntervalMs: 21_600_000,
     // SMTP left unset: MailService stays a no-op so tests never send real mail.
     smtpPort: 587,
     smtpSecure: false,
