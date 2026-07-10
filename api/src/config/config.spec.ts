@@ -59,6 +59,16 @@ describe('loadConfig', () => {
     expect(cfg.followupSuggestionsEnabled).toBe(false);
   });
 
+  it('defaults answerTemplatesEnabled to true', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.answerTemplatesEnabled).toBe(true);
+  });
+
+  it('parses ANSWER_TEMPLATES_ENABLED=false', () => {
+    const cfg = loadConfig({ ...valid, ANSWER_TEMPLATES_ENABLED: 'false' });
+    expect(cfg.answerTemplatesEnabled).toBe(false);
+  });
+
   it('leaves encryptionKey undefined when ENCRYPTION_KEY is unset', () => {
     const cfg = loadConfig(valid);
     expect(cfg.encryptionKey).toBeUndefined();

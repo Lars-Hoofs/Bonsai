@@ -156,7 +156,10 @@ describe('project settings e2e', () => {
   });
 
   it('viewer CAN GET settings', async () => {
-    await request(app.getHttpServer()).get(base()).set(authViewer()).expect(200);
+    await request(app.getHttpServer())
+      .get(base())
+      .set(authViewer())
+      .expect(200);
   });
 
   it('404s for a nonexistent project', async () => {

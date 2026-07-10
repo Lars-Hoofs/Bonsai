@@ -149,6 +149,18 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Answer templates / canned answers per intent (#28): when a visitor's
+  // question matches an active, short-circuiting answer-template trigger
+  // (keyword or intent phrase) configured for the project, the answer
+  // pipeline returns the editor-authored canned answer with attribution and
+  // skips retrieval + LLM entirely. On by default; purely additive — a
+  // project with no matching active template answers exactly as before, and
+  // flipping this off disables template matching regardless of configured
+  // templates.
+  ANSWER_TEMPLATES_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   // Symmetric key for encrypting tenant-owned API connector credentials at
   // rest (AES-256-GCM, see EncryptionService). Accepts base64 or hex; must
   // decode to exactly 32 bytes. Optional so most of the app/tests can run
@@ -272,6 +284,7 @@ export interface AppConfig {
   answerCacheEnabled: boolean;
   answerCacheTtlMs: number;
   followupSuggestionsEnabled: boolean;
+  answerTemplatesEnabled: boolean;
   encryptionKey?: Buffer;
   toolCallingEnabled: boolean;
   dedupEnabled: boolean;
@@ -341,6 +354,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     answerCacheEnabled: d.ANSWER_CACHE_ENABLED,
     answerCacheTtlMs: d.ANSWER_CACHE_TTL_MS,
     followupSuggestionsEnabled: d.FOLLOWUP_SUGGESTIONS_ENABLED,
+    answerTemplatesEnabled: d.ANSWER_TEMPLATES_ENABLED,
     encryptionKey: decodeEncryptionKey(d.ENCRYPTION_KEY),
     toolCallingEnabled: d.TOOL_CALLING_ENABLED,
     dedupEnabled: d.DEDUP_ENABLED,
