@@ -86,6 +86,14 @@ export class CrawlService {
    * crashed prior run that never reached its catch block) so they self-heal
    * on the next scheduled scan rather than staying stuck forever — not just
    * sources already sitting at 'processed'.
+   *
+   * Per-source schedule (roadmap #19): a source with its own
+   * `recrawl_interval_ms` is only enqueued once that interval has elapsed
+   * since its last successful sync (`last_synced_at`, or `updated_at` when it
+   * has never synced) — otherwise the global scan cadence would recrawl it
+   * every scan regardless of the tighter/looser interval the editor chose.
+   * Website sources WITHOUT a per-source interval keep the original behavior
+   * (enqueued on every scan), so this is purely additive.
    */
   async scanAndEnqueueAll(): Promise<number> {
     const tenants = await this.pool.query<{ schema_name: string }>(
@@ -97,7 +105,12 @@ export class CrawlService {
         db.execute(
           sql`SELECT id FROM knowledge_sources
               WHERE type = 'website'
-                AND (status <> 'processing' OR updated_at < now() - (${this.staleMs}::text || ' milliseconds')::interval)`,
+                AND (status <> 'processing' OR updated_at < now() - (${this.staleMs}::text || ' milliseconds')::interval)
+                AND (
+                  recrawl_interval_ms IS NULL
+                  OR coalesce(last_synced_at, updated_at)
+                       < now() - (recrawl_interval_ms::text || ' milliseconds')::interval
+                )`,
         ),
       );
       for (const row of sources.rows as { id: string }[]) {

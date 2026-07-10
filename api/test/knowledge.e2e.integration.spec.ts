@@ -9,6 +9,15 @@ import { TestIdp } from './helpers/oidc';
 interface SourceBody {
   id: string;
   status: string;
+  recrawlIntervalMs: number | null;
+}
+interface HealthRow {
+  id: string;
+  status: string;
+  documentCount: number;
+  chunkCount: number;
+  failedDocumentCount: number;
+  recrawlIntervalMs: number | null;
 }
 interface DocListItem {
   id: string;
@@ -164,5 +173,83 @@ describe('knowledge base e2e', () => {
       .set(auth())
       .expect(200);
     expect(docsGone.body as DocListItem[]).toHaveLength(0);
+  });
+
+  it('crawl-now re-ingests a source (roadmap #19)', async () => {
+    const create = await request(app.getHttpServer())
+      .post(`${base()}/sources`)
+      .set(auth())
+      .send({
+        type: 'manual',
+        name: 'crawlme',
+        config: { title: 'C', body: 'een twee drie vier vijf' },
+      })
+      .expect(201);
+    const sourceId = (create.body as SourceBody).id;
+
+    const res = await request(app.getHttpServer())
+      .post(`${base()}/sources/${sourceId}/crawl`)
+      .set(auth())
+      .expect(201);
+    expect((res.body as SourceBody).status).toBe('processed');
+  });
+
+  it('sets and clears a per-source re-crawl schedule (roadmap #19)', async () => {
+    const create = await request(app.getHttpServer())
+      .post(`${base()}/sources`)
+      .set(auth())
+      .send({
+        type: 'manual',
+        name: 'sched',
+        config: { title: 'S', body: 'alfa bravo charlie' },
+      })
+      .expect(201);
+    const sourceId = (create.body as SourceBody).id;
+
+    // Too-tight interval is rejected.
+    await request(app.getHttpServer())
+      .put(`${base()}/sources/${sourceId}/schedule`)
+      .set(auth())
+      .send({ recrawlIntervalMs: 1000 })
+      .expect(400);
+
+    const set = await request(app.getHttpServer())
+      .put(`${base()}/sources/${sourceId}/schedule`)
+      .set(auth())
+      .send({ recrawlIntervalMs: 3_600_000 })
+      .expect(200);
+    expect((set.body as SourceBody).recrawlIntervalMs).toBe(3_600_000);
+
+    const cleared = await request(app.getHttpServer())
+      .put(`${base()}/sources/${sourceId}/schedule`)
+      .set(auth())
+      .send({ recrawlIntervalMs: null })
+      .expect(200);
+    expect((cleared.body as SourceBody).recrawlIntervalMs).toBeNull();
+  });
+
+  it('reports source health overview with counts (roadmap #20)', async () => {
+    const create = await request(app.getHttpServer())
+      .post(`${base()}/sources`)
+      .set(auth())
+      .send({
+        type: 'manual',
+        name: 'health',
+        config: { title: 'H', body: 'delta echo foxtrot golf hotel' },
+      })
+      .expect(201);
+    const sourceId = (create.body as SourceBody).id;
+
+    const health = await request(app.getHttpServer())
+      .get(`${base()}/sources/health`)
+      .set(auth())
+      .expect(200);
+    const rows = health.body as HealthRow[];
+    const row = rows.find((r) => r.id === sourceId);
+    expect(row).toBeDefined();
+    expect(row?.status).toBe('processed');
+    expect(row?.documentCount).toBeGreaterThan(0);
+    expect(row?.chunkCount).toBeGreaterThan(0);
+    expect(row?.failedDocumentCount).toBe(0);
   });
 });

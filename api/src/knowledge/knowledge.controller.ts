@@ -9,6 +9,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Put,
   Query,
   Res,
   UploadedFile,
@@ -25,7 +26,12 @@ import type { AppConfig } from '../config/config';
 import { sanitizeFilename } from '../storage/sanitize-filename';
 import { StorageService } from '../storage/storage.service';
 import { KbBulkService, ImportSummary } from './bulk/kb-bulk.service';
-import { CreateSourceDto, ExportKnowledgeDto, ImportKnowledgeDto } from './dto';
+import {
+  CreateSourceDto,
+  ExportKnowledgeDto,
+  ImportKnowledgeDto,
+  SetSourceScheduleDto,
+} from './dto';
 import { extractUploadText } from './ingestion/extract-text';
 import { OCR_PROVIDER } from './ingestion/ocr-provider';
 import type { OcrProvider } from './ingestion/ocr-provider';
@@ -211,6 +217,18 @@ export class KnowledgeController {
     return this.knowledge.list(tenant.schemaName, projectId);
   }
 
+  // Aggregate health overview across all sources (roadmap #20): status, last
+  // crawl time/error, and doc/chunk counts per source. Declared before the
+  // `sources/:sourceId` route so 'health' is not swallowed as a source id.
+  @Get('sources/health')
+  @RequireRole('viewer')
+  sourceHealth(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+  ) {
+    return this.knowledge.healthOverview(tenant.schemaName, projectId);
+  }
+
   @Get('sources/:sourceId')
   getSource(
     @Tenant() tenant: TenantRef,
@@ -228,6 +246,37 @@ export class KnowledgeController {
     @Param('sourceId', ParseUUIDPipe) sourceId: string,
   ) {
     return this.knowledge.reprocess(tenant.schemaName, projectId, sourceId);
+  }
+
+  // "Crawl now" (roadmap #19): trigger an immediate re-crawl/re-ingest.
+  @Post('sources/:sourceId/crawl')
+  @RequireRole('editor')
+  crawlNow(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('sourceId', ParseUUIDPipe) sourceId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.knowledge.crawlNow(tenant, projectId, sourceId, user.id);
+  }
+
+  // Set (or clear) a per-source recurring re-crawl schedule (roadmap #19).
+  @Put('sources/:sourceId/schedule')
+  @RequireRole('editor')
+  setSchedule(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('sourceId', ParseUUIDPipe) sourceId: string,
+    @Body() dto: SetSourceScheduleDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.knowledge.setSchedule(
+      tenant,
+      projectId,
+      sourceId,
+      dto.recrawlIntervalMs ?? null,
+      user.id,
+    );
   }
 
   @Delete('sources/:sourceId')
