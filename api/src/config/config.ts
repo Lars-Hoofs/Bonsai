@@ -122,6 +122,16 @@ const schema = z.object({
   // can open a socket connection at all. Empty by default (no cross-origin
   // socket access) until configured for a deployment's widget-embed domains.
   WIDGET_CORS_ORIGINS: z.string().default(''),
+  // Answer cache (A9): caches grounded (non-refused) answers per project so
+  // identical repeated questions skip retrieval+LLM. On by default; the
+  // cache key includes a knowledge-version derived from
+  // knowledge_sources.updated_at, so re-ingestion automatically invalidates
+  // stale entries without any explicit purge.
+  ANSWER_CACHE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  ANSWER_CACHE_TTL_MS: z.coerce.number().int().positive().default(3_600_000),
   // Bearer token gating GET /metrics (self-hosted Prometheus scrape
   // endpoint). Optional: when unset, the endpoint is only reachable outside
   // production (NODE_ENV !== 'production') so local/dev scraping still works
@@ -170,6 +180,8 @@ export interface AppConfig {
   billingEnabled: boolean;
   widgetCorsOrigins: string[];
   metricsToken?: string;
+  answerCacheEnabled: boolean;
+  answerCacheTtlMs: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -222,5 +234,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       .map((s) => s.trim())
       .filter((s) => s.length > 0),
     metricsToken: d.METRICS_TOKEN,
+    answerCacheEnabled: d.ANSWER_CACHE_ENABLED,
+    answerCacheTtlMs: d.ANSWER_CACHE_TTL_MS,
   };
 }

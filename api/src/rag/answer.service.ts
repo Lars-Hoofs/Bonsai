@@ -12,6 +12,7 @@ import { RetrievalService } from './retrieval.service';
 import { LLM_PROVIDER } from './llm-provider';
 import type { LlmMessage, LlmProvider } from './llm-provider';
 import { MetricsService } from '../metrics/metrics.service';
+import { AnswerCacheService } from './answer-cache.service';
 
 export interface Citation {
   index: number;
@@ -91,6 +92,9 @@ export class AnswerService {
     // AnswerService(tenantDb, retrieval, llm, cfg), without a DI container)
     // keep working unchanged; falls back to a no-op below when absent.
     @Optional() private readonly metrics?: MetricsService,
+    // Optional so tests that construct AnswerService directly (without a DI
+    // container) keep working unchanged: no cache -> always compute.
+    @Optional() private readonly cache?: AnswerCacheService,
   ) {}
 
   async answer(
@@ -98,6 +102,17 @@ export class AnswerService {
     projectId: string,
     question: string,
   ): Promise<AnswerResult> {
+    const cache =
+      this.cfg.answerCacheEnabled && this.cache ? this.cache : undefined;
+    let kbVersion: string | undefined;
+    if (cache) {
+      kbVersion = await this.loadKbVersion(schemaName, projectId);
+      const hit = await cache.get(projectId, kbVersion, question);
+      if (hit) {
+        return hit;
+      }
+    }
+
     const project = await this.loadProject(schemaName, projectId);
     const threshold = project.confidenceThreshold;
 
@@ -183,13 +198,26 @@ export class AnswerService {
     );
 
     this.metrics?.answersTotal.inc({ refused: 'false' });
-    return {
+    const result: AnswerResult = {
       answer: raw.trim(),
       confidence,
       refused: false,
       citations: cited,
       escalationSuggested: false,
     };
+    // Only non-refused answers are cached: refusals are cheap to (re)compute
+    // and their grounding may change soon (e.g. new knowledge arriving), so
+    // there's no benefit to caching them.
+    if (cache && kbVersion !== undefined) {
+      await cache.set(
+        projectId,
+        kbVersion,
+        question,
+        result,
+        this.cfg.answerCacheTtlMs,
+      );
+    }
+    return result;
   }
 
   /** Gate refusal: 0 chunks retrieved, or retrievalScore below threshold —
@@ -433,6 +461,29 @@ export class AnswerService {
         language: row.default_language ?? 'nl',
         confidenceThreshold: threshold,
       };
+    });
+  }
+
+  /**
+   * Cheap per-project value that changes whenever the project's knowledge
+   * changes: the max `updated_at` across the project's `knowledge_sources`,
+   * which is bumped on every (re)ingestion attempt (start/success/failure —
+   * see IngestionService). Feeding this into the answer-cache key means a
+   * knowledge change automatically mints a different key for the same
+   * question, invalidating any stale cached answer without an explicit
+   * purge step.
+   */
+  private async loadKbVersion(
+    schemaName: string,
+    projectId: string,
+  ): Promise<string> {
+    return this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT COALESCE(max(updated_at), 'epoch')::text AS v
+            FROM knowledge_sources WHERE project_id = ${projectId}`,
+      );
+      const row = r.rows[0] as { v: string } | undefined;
+      return row?.v ?? 'epoch';
     });
   }
 }

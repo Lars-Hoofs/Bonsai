@@ -5,6 +5,7 @@ import { TenancyModule } from '../tenancy/tenancy.module';
 import { EmbeddingModule } from '../knowledge/embedding/embedding.module';
 import { RetrievalService } from './retrieval.service';
 import { AnswerService } from './answer.service';
+import { AnswerCacheService } from './answer-cache.service';
 import { RagController } from './rag.controller';
 import { LLM_PROVIDER } from './llm-provider';
 import type { LlmProvider } from './llm-provider';
@@ -20,6 +21,7 @@ import { HttpRerankProvider } from './http-rerank.provider';
   providers: [
     RetrievalService,
     AnswerService,
+    AnswerCacheService,
     {
       provide: LLM_PROVIDER,
       useFactory: (cfg: AppConfig): LlmProvider => {
