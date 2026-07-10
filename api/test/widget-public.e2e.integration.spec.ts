@@ -98,4 +98,15 @@ describe('public widget delivery e2e', () => {
       .set('Origin', ORIGIN)
       .expect(401);
   });
+
+  it('rejects a preview request with no token', async () => {
+    await request(app.getHttpServer()).get('/v1/widget/preview').expect(401);
+  });
+
+  it('rejects a preview request with a garbage token', async () => {
+    await request(app.getHttpServer())
+      .get('/v1/widget/preview')
+      .query({ token: 'not-a-real-token' })
+      .expect(401);
+  });
 });

@@ -7,15 +7,19 @@ import {
   Post,
   Put,
 } from '@nestjs/common';
-import { Tenant } from '../auth/auth.types';
-import type { TenantRef } from '../auth/auth.types';
+import { CurrentUser, Tenant } from '../auth/auth.types';
+import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
-import { SaveThemeDto } from './dto';
+import { ApplyPresetDto, ImportThemeDto, SaveThemeDto } from './dto';
+import { PreviewTokenService } from './preview-token.service';
 import { WidgetService } from './widget.service';
 
 @Controller('tenants/:tenantId/projects/:projectId/widget')
 export class WidgetController {
-  constructor(private readonly widget: WidgetService) {}
+  constructor(
+    private readonly widget: WidgetService,
+    private readonly previewTokens: PreviewTokenService,
+  ) {}
 
   @Get('theme')
   @RequireRole('viewer')
@@ -41,8 +45,12 @@ export class WidgetController {
   publish(
     @Tenant() tenant: TenantRef,
     @Param('projectId', ParseUUIDPipe) projectId: string,
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.widget.publish(tenant.schemaName, projectId);
+    return this.widget.publish(tenant.schemaName, projectId, {
+      tenantId: tenant.id,
+      actorUserId: user.id,
+    });
   }
 
   @Get('theme/published')
@@ -52,5 +60,67 @@ export class WidgetController {
     @Param('projectId', ParseUUIDPipe) projectId: string,
   ) {
     return this.widget.getPublished(tenant.schemaName, projectId);
+  }
+
+  @Get('theme/presets')
+  @RequireRole('viewer')
+  presets() {
+    return this.widget.listPresets();
+  }
+
+  @Post('theme/apply-preset')
+  @RequireRole('editor')
+  applyPreset(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: ApplyPresetDto,
+  ) {
+    return this.widget.applyPreset(tenant.schemaName, projectId, dto.preset);
+  }
+
+  @Get('theme/export')
+  @RequireRole('viewer')
+  export(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+  ) {
+    return this.widget.exportTheme(tenant.schemaName, projectId);
+  }
+
+  @Post('theme/import')
+  @RequireRole('editor')
+  import(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: ImportThemeDto,
+  ) {
+    return this.widget.importTheme(tenant.schemaName, projectId, dto.theme);
+  }
+
+  @Get('theme/contrast')
+  @RequireRole('viewer')
+  contrast(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+  ) {
+    return this.widget.contrastReport(tenant.schemaName, projectId);
+  }
+
+  /**
+   * Issues a short-lived (1h) signed token for the shareable draft preview
+   * link. The token itself is opaque and unauthenticated at the public
+   * endpoint (see WidgetPublicController.preview) — anyone holding the link
+   * can view the draft, which is the intended "share this preview with a
+   * stakeholder" behavior. It grants read access to the draft ONLY, never
+   * write access.
+   */
+  @Post('theme/preview-token')
+  @RequireRole('editor')
+  async createPreviewToken(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+  ) {
+    const token = await this.previewTokens.issue(tenant.schemaName, projectId);
+    return { token };
   }
 }

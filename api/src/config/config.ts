@@ -209,6 +209,15 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  // HMAC secret signing the widget theme "shareable preview" token (see
+  // WidgetThemeController.createPreviewToken / WidgetPublicController.preview).
+  // Optional: when unset, a fixed dev-only default is used so local/test runs
+  // work out of the box — any real deployment that wants preview links to be
+  // unforgeable across restarts/instances should set this explicitly.
+  WIDGET_PREVIEW_TOKEN_SECRET: z
+    .string()
+    .min(1)
+    .default('dev-only-insecure-widget-preview-secret'),
 });
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
@@ -286,6 +295,7 @@ export interface AppConfig {
   smtpPass?: string;
   smtpFrom?: string;
   smtpSecure: boolean;
+  widgetPreviewTokenSecret: string;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -355,5 +365,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     smtpPass: d.SMTP_PASS,
     smtpFrom: d.SMTP_FROM,
     smtpSecure: d.SMTP_SECURE,
+    widgetPreviewTokenSecret: d.WIDGET_PREVIEW_TOKEN_SECRET,
   };
 }

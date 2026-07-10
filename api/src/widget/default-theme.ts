@@ -8,11 +8,11 @@
 export const DEFAULT_WIDGET_THEME: Record<string, unknown> = {
   version: 1,
   launcher: {
-    icon: 'bonsai-default',
-    gradient: { from: '#7C3AED', to: '#2563EB', centerColor: '#FFFFFF' },
+    iconMode: 'gradient',
     size: 60,
-    position: 'bottom-right',
+    corner: 'br',
   },
+  gradient: { from: '#7C3AED', to: '#2563EB', centerColor: '#FFFFFF' },
   window: {
     width: 380,
     height: 560,
