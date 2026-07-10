@@ -27,6 +27,7 @@ import { AuditLogModule } from './audit-log/audit-log.module';
 import { ChunksModule } from './chunks/chunks.module';
 import { SynonymsModule } from './synonyms/synonyms.module';
 import { AnswerTemplatesModule } from './answer-templates/answer-templates.module';
+import { CannedResponsesModule } from './canned-responses/canned-responses.module';
 import { MailModule } from './mail/mail.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { RagDebugModule } from './rag/debug/rag-debug.module';
@@ -62,6 +63,7 @@ import { ModerationModule } from './moderation/moderation.module';
     ChunksModule,
     SynonymsModule,
     AnswerTemplatesModule,
+    CannedResponsesModule,
     MailModule,
     InvitationsModule,
     RagDebugModule,
