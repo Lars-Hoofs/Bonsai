@@ -1,5 +1,6 @@
 import {
   bigint,
+  boolean,
   jsonb,
   pgTable,
   primaryKey,
@@ -113,6 +114,23 @@ export const auditLog = pgTable('audit_log', {
   action: text('action').notNull(),
   resource: text('resource').notNull(),
   metadata: jsonb('metadata').notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// App-level TOTP second factor (#49): additive to the primary OIDC login —
+// an enrolled user must also supply a valid RFC 6238 code for sensitive
+// actions the API chooses to enforce it on. One row per user; `secretEncrypted`
+// is AES-256-GCM ciphertext (see EncryptionService), never the raw base32
+// secret. `enabled` flips true only after the user proves possession of the
+// secret via a successful /verify call.
+export const userTotp = pgTable('user_totp', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  secretEncrypted: text('secret_encrypted').notNull(),
+  enabled: boolean('enabled').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
