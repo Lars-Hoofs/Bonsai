@@ -8,9 +8,11 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser, Tenant } from '../auth/auth.types';
@@ -18,7 +20,8 @@ import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
 import { sanitizeFilename } from '../storage/sanitize-filename';
 import { StorageService } from '../storage/storage.service';
-import { CreateSourceDto } from './dto';
+import { KbBulkService, ImportSummary } from './bulk/kb-bulk.service';
+import { CreateSourceDto, ExportKnowledgeDto, ImportKnowledgeDto } from './dto';
 import { extractUploadText } from './ingestion/extract-text';
 import { KnowledgeSourcesService } from './knowledge-sources.service';
 
@@ -40,7 +43,64 @@ export class KnowledgeController {
   constructor(
     private readonly knowledge: KnowledgeSourcesService,
     private readonly storage: StorageService,
+    private readonly bulk: KbBulkService,
   ) {}
+
+  @Get('export')
+  @RequireRole('editor')
+  async exportKnowledge(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Query() query: ExportKnowledgeDto,
+    @CurrentUser() user: AuthUser,
+    // Non-passthrough: we write the body ourselves so a Buffer (the zip
+    // bundle) is sent verbatim rather than JSON-serialized by Nest's
+    // serializer into `{"type":"Buffer",...}`.
+    @Res() res: Response,
+  ): Promise<void> {
+    const result = await this.bulk.export(
+      tenant,
+      projectId,
+      query.format ?? 'json',
+      user.id,
+    );
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.filename}"`,
+    );
+    res.send(result.body);
+  }
+
+  @Post('import')
+  @RequireRole('editor')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }),
+  )
+  async importKnowledge(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Body() dto: ImportKnowledgeDto,
+    @UploadedFile() file: UploadedFileLike | undefined,
+    @CurrentUser() user: AuthUser,
+  ): Promise<ImportSummary> {
+    if (!file) throw new BadRequestException('No file uploaded (field "file")');
+    try {
+      return await this.bulk.import(
+        tenant,
+        projectId,
+        dto.format,
+        file.buffer,
+        user.id,
+      );
+    } catch (err) {
+      // Bundle-level parse/size failures (not per-row) surface as 400s with
+      // the clear message from the bundle parser.
+      throw new BadRequestException(
+        err instanceof Error ? err.message : 'Ongeldige bundle',
+      );
+    }
+  }
 
   @Post('sources')
   @RequireRole('editor')

@@ -1,4 +1,4 @@
-import { IsIn, IsObject, IsString, Length } from 'class-validator';
+import { IsIn, IsObject, IsOptional, IsString, Length } from 'class-validator';
 
 export class CreateSourceDto {
   @IsIn(['manual', 'csv', 'website']) type!: 'manual' | 'csv' | 'website';
@@ -6,4 +6,14 @@ export class CreateSourceDto {
   // Shape depends on type: manual -> { title, body, language? };
   // csv -> { csv, titleColumn?, bodyColumns? }; website -> { url }.
   @IsObject() config!: Record<string, unknown>;
+}
+
+export class ExportKnowledgeDto {
+  @IsOptional()
+  @IsIn(['json', 'csv', 'zip'])
+  format?: 'json' | 'csv' | 'zip';
+}
+
+export class ImportKnowledgeDto {
+  @IsIn(['json', 'csv', 'zip']) format!: 'json' | 'csv' | 'zip';
 }
