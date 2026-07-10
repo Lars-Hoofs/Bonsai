@@ -45,4 +45,17 @@ describe('loadConfig', () => {
       /RETRIEVAL_WINDOW/,
     );
   });
+
+  it('defaults followupSuggestionsEnabled to true', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.followupSuggestionsEnabled).toBe(true);
+  });
+
+  it('parses FOLLOWUP_SUGGESTIONS_ENABLED=false', () => {
+    const cfg = loadConfig({
+      ...valid,
+      FOLLOWUP_SUGGESTIONS_ENABLED: 'false',
+    });
+    expect(cfg.followupSuggestionsEnabled).toBe(false);
+  });
 });

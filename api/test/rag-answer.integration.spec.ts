@@ -32,11 +32,23 @@ const isClaimCheckCall = (messages: LlmMessage[]): boolean =>
     (m) => m.role === 'system' && m.content.includes('BONSAI_CLAIM_CHECK_V1'),
   );
 
+/** True if this call is the follow-up suggestions call (A11), routed via its
+ * own distinct system-role tag — see answer.service.ts. */
+const isFollowupCall = (messages: LlmMessage[]): boolean =>
+  messages.some(
+    (m) => m.role === 'system' && m.content.includes('BONSAI_FOLLOWUP_V1'),
+  );
+
 const cfg = (
   selfCheckEnabled: boolean,
   extra: Partial<AppConfig> = {},
 ): AppConfig =>
-  ({ selfCheckEnabled, verificationMode: 'self-check', ...extra }) as AppConfig;
+  ({
+    selfCheckEnabled,
+    verificationMode: 'self-check',
+    followupSuggestionsEnabled: true,
+    ...extra,
+  }) as AppConfig;
 
 describe('RAG answer pipeline (anti-hallucination)', () => {
   let container: StartedPostgreSqlContainer;
@@ -106,6 +118,9 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
     // coverage contribution, not the bare (possibly low) raw retrieval
     // cosine score.
     expect(res.confidence).toBeGreaterThanOrEqual(0.2);
+    // Fake LLM never configures a real llmApiUrl, so follow-up suggestions
+    // (A11) must always be empty regardless of followupSuggestionsEnabled.
+    expect(res.suggestedQuestions).toEqual([]);
   });
 
   it('always cites at least one source for every non-refused answer (invariant)', async () => {
@@ -136,6 +151,30 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
     // even sent to the model.
     expect(res.confidence).toBeGreaterThanOrEqual(0);
     expect(res.confidence).toBeLessThan(0.1);
+    // Refusals never carry follow-up suggestions.
+    expect(res.suggestedQuestions).toEqual([]);
+  });
+
+  it('answers an out-of-KB question in English with the English refusal message (A10 language-aware refusal)', async () => {
+    const res = await answerWith(new FakeLlmProvider()).answer(
+      schemaName,
+      projectId,
+      'how does quantum entanglement work in space travel',
+    );
+    expect(res.refused).toBe(true);
+    expect(res.answer).toMatch(/not sure|don't know/i);
+    expect(res.answer).not.toMatch(/niet zeker/i);
+    expect(res.suggestedQuestions).toEqual([]);
+  });
+
+  it('answers an out-of-KB question in Dutch with the Dutch refusal message (A10 language-aware refusal)', async () => {
+    const res = await answerWith(new FakeLlmProvider()).answer(
+      schemaName,
+      projectId,
+      'hoe werkt kwantumverstrengeling in de ruimtevaart',
+    );
+    expect(res.refused).toBe(true);
+    expect(res.answer).toMatch(/niet zeker/i);
   });
 
   it('refuses an answer that fails to cite any source (citation enforcement)', async () => {
@@ -471,6 +510,102 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
         'wat zijn de openingstijden van de winkel',
       );
       expect(expandCalls).toBe(0);
+    });
+  });
+
+  describe('follow-up suggestions (A11)', () => {
+    it('returns 2-3 suggestedQuestions for a grounded answer when a real llm is configured and enabled', async () => {
+      const stub: LlmProvider = {
+        complete: (messages) => {
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          if (isFollowupCall(messages)) {
+            return Promise.resolve(
+              'Wat zijn de openingstijden in het weekend?\n' +
+                'Is de winkel ook op feestdagen open?',
+            );
+          }
+          return Promise.resolve(
+            'De winkel is open op werkdagen van negen tot vijf [1].',
+          );
+        },
+      };
+      const realCfg = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: false,
+        followupSuggestionsEnabled: true,
+      });
+      const svc = new AnswerService(tenantDb, retrieval, stub, realCfg);
+      const res = await svc.answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      expect(res.refused).toBe(false);
+      expect(res.suggestedQuestions.length).toBeGreaterThanOrEqual(2);
+      expect(res.suggestedQuestions.length).toBeLessThanOrEqual(3);
+    });
+
+    it('returns [] when followupSuggestionsEnabled is false, even with a real llm configured', async () => {
+      let followupCalls = 0;
+      const stub: LlmProvider = {
+        complete: (messages) => {
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          if (isFollowupCall(messages)) {
+            followupCalls++;
+            return Promise.resolve('Vraag 1?\nVraag 2?');
+          }
+          return Promise.resolve(
+            'De winkel is open op werkdagen van negen tot vijf [1].',
+          );
+        },
+      };
+      const realCfg = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: false,
+        followupSuggestionsEnabled: false,
+      });
+      const svc = new AnswerService(tenantDb, retrieval, stub, realCfg);
+      const res = await svc.answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      expect(res.refused).toBe(false);
+      expect(followupCalls).toBe(0);
+      expect(res.suggestedQuestions).toEqual([]);
+    });
+
+    it('returns [] when the follow-up call errors or returns garbage (never fails the answer)', async () => {
+      const flaky: LlmProvider = {
+        complete: (messages) => {
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          if (isFollowupCall(messages)) {
+            return Promise.reject(new Error('boom'));
+          }
+          return Promise.resolve(
+            'De winkel is open op werkdagen van negen tot vijf [1].',
+          );
+        },
+      };
+      const realCfg = cfg(true, {
+        llmApiUrl: 'https://llm.example.invalid',
+        multiQueryEnabled: false,
+        followupSuggestionsEnabled: true,
+      });
+      const svc = new AnswerService(tenantDb, retrieval, flaky, realCfg);
+      const res = await svc.answer(
+        schemaName,
+        projectId,
+        'wat zijn de openingstijden van de winkel',
+      );
+      expect(res.refused).toBe(false);
+      expect(res.suggestedQuestions).toEqual([]);
     });
   });
 

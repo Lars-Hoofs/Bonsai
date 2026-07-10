@@ -140,6 +140,15 @@ const schema = z.object({
   // cardinalities (route names, tenant-scale counters) and must never be
   // publicly world-readable.
   METRICS_TOKEN: z.string().min(1).optional(),
+  // Follow-up question suggestions (A11): after a non-refused answer, one
+  // extra small LLM call proposes 2-3 short follow-up questions the visitor
+  // might ask next, based only on the sources/answer. On by default; also
+  // requires a real LLM to be configured (see AnswerService) — with only the
+  // fake LLM (tests/dev), suggestions are always `[]` regardless of this flag.
+  FOLLOWUP_SUGGESTIONS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 export interface AppConfig {
@@ -182,6 +191,7 @@ export interface AppConfig {
   metricsToken?: string;
   answerCacheEnabled: boolean;
   answerCacheTtlMs: number;
+  followupSuggestionsEnabled: boolean;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -236,5 +246,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     metricsToken: d.METRICS_TOKEN,
     answerCacheEnabled: d.ANSWER_CACHE_ENABLED,
     answerCacheTtlMs: d.ANSWER_CACHE_TTL_MS,
+    followupSuggestionsEnabled: d.FOLLOWUP_SUGGESTIONS_ENABLED,
   };
 }
