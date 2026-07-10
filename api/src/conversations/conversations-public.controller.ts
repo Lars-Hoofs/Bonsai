@@ -20,6 +20,7 @@ import { ResolvedWidgetKey } from '../apikeys/apikeys.service';
 import { ConversationsService } from './conversations.service';
 import { PublicWidgetGuard } from './public-widget.guard';
 import {
+  EmailTranscriptDto,
   EscalateDto,
   PostMessageDto,
   ResumeConversationDto,
@@ -39,6 +40,14 @@ interface WidgetKeyedRequest extends Request {
 // config (not a literal) so it's tunable via env without a code change.
 const startConversationRateLimitGuard = rateLimitGuardFromConfig(
   (cfg) => cfg.conversationStartRatePerMin,
+);
+
+// Per-project+IP tight cap on "email me this transcript": each call sends a
+// real email via self-hosted SMTP to a visitor-supplied address, so it's an
+// obvious abuse/spam-relay vector. `TRANSCRIPT_EMAIL_RATE_PER_MIN` (default
+// 5/min/project+IP) is read from config so it's tunable via env.
+const emailTranscriptRateLimitGuard = rateLimitGuardFromConfig(
+  (cfg) => cfg.transcriptEmailRatePerMin,
 );
 
 function requireWidgetKey(req: WidgetKeyedRequest): ResolvedWidgetKey {
@@ -181,6 +190,28 @@ export class ConversationsPublicController {
       visitorSecret,
       dto.score,
       dto.comment,
+    );
+    return { ok: true };
+  }
+
+  @Post(':conversationId/email-transcript')
+  @UseGuards(emailTranscriptRateLimitGuard)
+  async emailTranscript(
+    @Req() req: WidgetKeyedRequest,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Body() dto: EmailTranscriptDto,
+    @Headers('x-bonsai-visitor-secret') visitorSecret: string | undefined,
+  ): Promise<{ ok: true }> {
+    const { schemaName, projectId } = requireWidgetKey(req);
+    if (!visitorSecret) {
+      throw new UnauthorizedException('Missing visitor secret');
+    }
+    await this.conversations.emailTranscript(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+      dto.email,
     );
     return { ok: true };
   }

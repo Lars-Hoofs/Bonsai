@@ -1,4 +1,5 @@
 import {
+  IsEmail,
   IsIn,
   IsInt,
   IsOptional,
@@ -45,4 +46,8 @@ export class SubmitCsatDto {
 
 export class SubmitMessageFeedbackDto {
   @IsIn(['up', 'down']) rating!: 'up' | 'down';
+}
+
+export class EmailTranscriptDto {
+  @IsEmail() @Length(3, 320) email!: string;
 }

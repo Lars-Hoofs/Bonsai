@@ -29,6 +29,7 @@ export async function buildTestApp(
     rateLimitPerMinute: 120,
     widgetConfigRatePerMin: 60,
     conversationStartRatePerMin: 20,
+    transcriptEmailRatePerMin: 5,
     recrawlIntervalMs: 86_400_000,
     ingestionStaleMs: 900_000,
     ingestionTimeoutMs: 60_000,

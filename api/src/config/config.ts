@@ -54,6 +54,13 @@ const schema = z.object({
     .int()
     .positive()
     .default(20),
+  // Per-project+IP cap on the visitor "email me this transcript" endpoint
+  // (see ConversationsPublicController): each call sends a real email via
+  // self-hosted SMTP to a visitor-supplied address, so it's an obvious
+  // abuse/spam-relay vector and needs its own tight cap independent of the
+  // general per-tenant/per-route limit. 5/min/project+IP is ample for a
+  // human clicking "email me this" while bounding automated abuse.
+  TRANSCRIPT_EMAIL_RATE_PER_MIN: z.coerce.number().int().positive().default(5),
   // Redis for the re-crawl queue/scheduler. When unset, scheduled re-crawl is
   // disabled (on-demand reprocess still works).
   REDIS_URL: z.string().url().optional(),
@@ -262,6 +269,7 @@ export interface AppConfig {
   rateLimitPerMinute: number;
   widgetConfigRatePerMin: number;
   conversationStartRatePerMin: number;
+  transcriptEmailRatePerMin: number;
   redisUrl?: string;
   recrawlIntervalMs: number;
   ingestionStaleMs: number;
@@ -330,6 +338,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     rateLimitPerMinute: d.RATE_LIMIT_PER_MINUTE,
     widgetConfigRatePerMin: d.WIDGET_CONFIG_RATE_PER_MIN,
     conversationStartRatePerMin: d.CONVERSATION_START_RATE_PER_MIN,
+    transcriptEmailRatePerMin: d.TRANSCRIPT_EMAIL_RATE_PER_MIN,
     redisUrl: d.REDIS_URL,
     recrawlIntervalMs: d.RECRAWL_INTERVAL_MS,
     ingestionStaleMs: d.INGESTION_STALE_MS,
