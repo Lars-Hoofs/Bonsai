@@ -335,6 +335,19 @@ const schema = z.object({
   // limits object sets a field to `null` (or the special "enterprise" plan,
   // which is always unlimited) means "no limit" for that dimension.
   PLAN_LIMITS_JSON: z.string().optional(),
+  // Scheduled report generation (#45). An in-process interval runner (no Redis
+  // dependency — works in the base self-hosted deploy) periodically scans every
+  // active tenant's report_schedules for due entries, generates the report and
+  // delivers it via MailModule / StorageModule. On by default; the scan is
+  // cheap when no schedules exist. Disable to opt a node out of running the
+  // scheduler (e.g. a read-only replica or a test process).
+  REPORTS_SCHEDULER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // How often the runner ticks. Default 1h: cadences are day/week/month
+  // granularity, so an hourly scan is plenty timely while staying cheap.
+  REPORTS_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
 });
 
 // A `null` field means "no limit" for that dimension.
@@ -498,6 +511,8 @@ export interface AppConfig {
   ocrLanguages: string;
   ocrMaxPages: number;
   planLimits: Record<string, PlanLimits>;
+  reportsSchedulerEnabled: boolean;
+  reportsIntervalMs: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -586,5 +601,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     ocrLanguages: d.OCR_LANGUAGES,
     ocrMaxPages: d.OCR_MAX_PAGES,
     planLimits: parsePlanLimits(d.PLAN_LIMITS_JSON),
+    reportsSchedulerEnabled: d.REPORTS_SCHEDULER_ENABLED,
+    reportsIntervalMs: d.REPORTS_INTERVAL_MS,
   };
 }

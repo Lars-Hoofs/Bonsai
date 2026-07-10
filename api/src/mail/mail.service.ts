@@ -3,11 +3,18 @@ import { createTransport, Transporter } from 'nodemailer';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 
+export interface MailAttachment {
+  filename: string;
+  content: Buffer | string;
+  contentType?: string;
+}
+
 export interface SendMailInput {
   to: string;
   subject: string;
   html?: string;
   text?: string;
+  attachments?: MailAttachment[];
 }
 
 /**
@@ -53,6 +60,7 @@ export class MailService {
       subject: input.subject,
       html: input.html,
       text: input.text,
+      attachments: input.attachments,
     });
   }
 }

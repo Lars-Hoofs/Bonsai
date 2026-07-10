@@ -37,6 +37,7 @@ import { ConversationNotesModule } from './conversation-notes/conversation-notes
 import { ModerationModule } from './moderation/moderation.module';
 import { UnansweredQuestionsModule } from './unanswered-questions/unanswered-questions.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -75,6 +76,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     ModerationModule,
     UnansweredQuestionsModule,
     NotificationsModule,
+    ReportsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],

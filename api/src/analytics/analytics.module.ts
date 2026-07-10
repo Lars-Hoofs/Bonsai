@@ -9,5 +9,6 @@ import { TopicsService } from './topics/topics.service';
   imports: [TenancyModule],
   controllers: [AnalyticsController, TopicsController],
   providers: [AnalyticsService, TopicsService],
+  exports: [AnalyticsService],
 })
 export class AnalyticsModule {}

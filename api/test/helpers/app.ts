@@ -105,6 +105,10 @@ export async function buildTestApp(
     // itself is covered by a dedicated plan-limits e2e suite that lowers a
     // specific tenant's plan/limits via PLAN_LIMITS_JSON overrides.
     planLimits: DEFAULT_PLAN_LIMITS,
+    // Scheduler off by default in tests so no background interval fires during
+    // e2e specs; specs that exercise the runner drive it explicitly.
+    reportsSchedulerEnabled: false,
+    reportsIntervalMs: 3_600_000,
     ...cfgOverrides,
   };
   let builder = Test.createTestingModule({ imports: [AppModule] })
