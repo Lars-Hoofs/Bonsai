@@ -235,4 +235,152 @@ describe('evals e2e', () => {
       .set(authViewer())
       .expect(200);
   });
+
+  describe('A/B experiments (#30)', () => {
+    interface VariantBody {
+      id: string;
+      name: string;
+      systemPrompt: string | null;
+      confidenceThreshold: number | null;
+    }
+    interface ExperimentBody {
+      id: string;
+      name: string;
+      description: string | null;
+      variants: VariantBody[];
+    }
+    interface ExperimentRunBody {
+      runId: string;
+      experimentId: string;
+      total: number;
+      bestVariantId: string | null;
+      variants: {
+        variantId: string;
+        variantName: string;
+        total: number;
+        passed: number;
+        score: number;
+        results: { caseId: string; pass: boolean }[];
+      }[];
+    }
+
+    let experimentId: string;
+    let baselineVariantId: string;
+    let sabotageVariantId: string;
+
+    it('rejects an experiment with fewer than 2 variants', async () => {
+      await request(app.getHttpServer())
+        .post(`${base()}/experiments`)
+        .set(authOwner())
+        .send({ name: 'too few', variants: [{ name: 'only' }] })
+        .expect(400);
+    });
+
+    it('viewer cannot create an experiment (RBAC)', async () => {
+      await request(app.getHttpServer())
+        .post(`${base()}/experiments`)
+        .set(authViewer())
+        .send({
+          name: 'x',
+          variants: [{ name: 'a' }, { name: 'b' }],
+        })
+        .expect(403);
+    });
+
+    it('creates an experiment with variants and lists it', async () => {
+      const created = await request(app.getHttpServer())
+        .post(`${base()}/experiments`)
+        .set(authOwner())
+        .send({
+          name: 'prompt A vs threshold B',
+          description: 'compare',
+          variants: [
+            // Baseline: built-in prompt + project threshold.
+            { name: 'baseline' },
+            // Sabotage: an impossibly-high threshold so the confidence gate
+            // refuses the in-scope case, making this variant score worse.
+            { name: 'high-threshold', confidenceThreshold: 1 },
+          ],
+        })
+        .expect(201);
+      const body = created.body as ExperimentBody;
+      expect(body.variants).toHaveLength(2);
+      experimentId = body.id;
+      baselineVariantId = body.variants[0].id;
+      sabotageVariantId = body.variants[1].id;
+      expect(body.variants[0].confidenceThreshold).toBeNull();
+      expect(body.variants[1].confidenceThreshold).toBe(1);
+
+      const list = await request(app.getHttpServer())
+        .get(`${base()}/experiments`)
+        .set(authViewer())
+        .expect(200);
+      expect(
+        (list.body as ExperimentBody[]).some((e) => e.id === experimentId),
+      ).toBe(true);
+    });
+
+    it('runs the experiment across variants, picks the best, persists a run, audits, and enforces RBAC', async () => {
+      // Ensure there is exactly one in-scope + one out-of-scope case (the
+      // earlier "runs the eval suite" test already left two such cases).
+      const cases = await request(app.getHttpServer())
+        .get(`${base()}/cases`)
+        .set(authOwner())
+        .expect(200);
+      expect((cases.body as unknown[]).length).toBeGreaterThanOrEqual(2);
+
+      // Viewer cannot run.
+      await request(app.getHttpServer())
+        .post(`${base()}/experiments/${experimentId}/run`)
+        .set(authViewer())
+        .expect(403);
+
+      const run = await request(app.getHttpServer())
+        .post(`${base()}/experiments/${experimentId}/run`)
+        .set(authOwner())
+        .expect(201);
+      const summary = run.body as ExperimentRunBody;
+      expect(summary.variants).toHaveLength(2);
+
+      const baseline = summary.variants.find(
+        (v) => v.variantId === baselineVariantId,
+      )!;
+      const sabotage = summary.variants.find(
+        (v) => v.variantId === sabotageVariantId,
+      )!;
+      // The high-threshold variant refuses the in-scope case (which expects a
+      // non-refusal), so it scores strictly lower than the baseline, and the
+      // baseline is chosen as best.
+      expect(baseline.score).toBeGreaterThan(sabotage.score);
+      expect(summary.bestVariantId).toBe(baselineVariantId);
+
+      // Run row persisted and retrievable.
+      const runs = await request(app.getHttpServer())
+        .get(`${base()}/experiments/${experimentId}/runs`)
+        .set(authViewer())
+        .expect(200);
+      expect(
+        (runs.body as { id: string }[]).some((r) => r.id === summary.runId),
+      ).toBe(true);
+
+      // Audit entry written.
+      const audit = await pool.query<{ resource: string }>(
+        `SELECT resource FROM audit_log WHERE action = 'eval.experiment.run' AND tenant_id = $1`,
+        [tenantId],
+      );
+      expect(audit.rows.length).toBeGreaterThan(0);
+      expect(audit.rows[0].resource).toBe(`experiment:${experimentId}`);
+    });
+
+    it('deletes an experiment (cascades variants and runs)', async () => {
+      await request(app.getHttpServer())
+        .delete(`${base()}/experiments/${experimentId}`)
+        .set(authOwner())
+        .expect(200);
+      await request(app.getHttpServer())
+        .get(`${base()}/experiments/${experimentId}`)
+        .set(authOwner())
+        .expect(404);
+    });
+  });
 });
