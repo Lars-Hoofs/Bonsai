@@ -460,4 +460,107 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
         .expect(400);
     });
   });
+
+  describe('resume across reloads (id + secret) (#13)', () => {
+    interface ResumeBody {
+      conversation: { id: string; projectId: string; status: string };
+      messages: {
+        id: string;
+        role: string;
+        content: string;
+        citations: {
+          documentId: string;
+          documentTitle: string;
+          originUrl: string | null;
+        }[];
+      }[];
+    }
+
+    it('a returning visitor resumes with id + secret and gets the full history with citations', async () => {
+      const started = await request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', widgetKey)
+        .send({ language: 'nl' })
+        .expect(201);
+      const { id: conversationId, visitorSecret } = started.body as StartBody;
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/messages`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ content: 'hallo, wat zijn jullie openingstijden?' })
+        .expect(201);
+
+      // Simulate a page reload: the widget only kept id + secret and POSTs
+      // the secret in the body to rehydrate.
+      const resumed = await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/resume`)
+        .set('x-bonsai-key', widgetKey)
+        .send({ visitorSecret })
+        .expect(201);
+      const body = resumed.body as ResumeBody;
+      expect(body.conversation.id).toBe(conversationId);
+      expect(body.messages.length).toBeGreaterThanOrEqual(2);
+      expect(body.messages[0].role).toBe('visitor');
+      // Every message carries a citations array (empty for non-bot messages).
+      for (const m of body.messages) {
+        expect(Array.isArray(m.citations)).toBe(true);
+      }
+    });
+
+    it('rejects resume without a secret, or with the wrong secret, and never returns conversation data', async () => {
+      const started = await request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', widgetKey)
+        .send({ language: 'nl' })
+        .expect(201);
+      const { id: conversationId } = started.body as StartBody;
+
+      // Missing secret -> DTO validation rejects (400).
+      const noSecret = await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/resume`)
+        .set('x-bonsai-key', widgetKey)
+        .send({})
+        .expect(400);
+      expect(noSecret.body).not.toHaveProperty('conversation');
+
+      // Wrong secret -> 401, no data.
+      const wrongSecret = await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/resume`)
+        .set('x-bonsai-key', widgetKey)
+        .send({ visitorSecret: 'not-the-real-secret-0000000000000000000000' })
+        .expect(401);
+      expect(wrongSecret.body).not.toHaveProperty('conversation');
+    });
+
+    it('returns 404 for a conversationId that does not exist at all', async () => {
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/00000000-0000-0000-0000-000000000000/resume`)
+        .set('x-bonsai-key', widgetKey)
+        .send({ visitorSecret: 'whatever-secret-value-padding-out-00000' })
+        .expect(404);
+    });
+
+    it('cross-conversation isolation: secret A cannot resume conversation B', async () => {
+      const a = await request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', widgetKey)
+        .send({ visitorId: 'resume-a', language: 'nl' })
+        .expect(201);
+      const { visitorSecret: secretA } = a.body as StartBody;
+
+      const b = await request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', widgetKey)
+        .send({ visitorId: 'resume-b', language: 'nl' })
+        .expect(201);
+      const { id: conversationB } = b.body as StartBody;
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationB}/resume`)
+        .set('x-bonsai-key', widgetKey)
+        .send({ visitorSecret: secretA })
+        .expect(401);
+    });
+  });
 });

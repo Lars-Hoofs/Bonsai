@@ -95,6 +95,16 @@ export interface MessageRow {
   createdAt: string;
 }
 
+export interface MessageCitation {
+  documentId: string;
+  documentTitle: string;
+  originUrl: string | null;
+}
+
+export interface MessageRowWithCitations extends MessageRow {
+  citations: MessageCitation[];
+}
+
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -517,6 +527,36 @@ export class ConversationsService {
     return { conversation: convo, messages };
   }
 
+  /**
+   * Returning-visitor resume (#13): rehydrates a conversation the visitor
+   * already owns after a page reload, proving ownership with the
+   * per-conversation visitor secret they persisted client-side (id + secret).
+   * Unlike `getWithMessagesForVisitor`, each message carries its bot
+   * citations, so the widget can rebuild the full transcript — including the
+   * citation chips under bot answers — exactly as it looked before the reload.
+   */
+  async resumeForVisitor(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+  ): Promise<{
+    conversation: ConversationSummary;
+    messages: MessageRowWithCitations[];
+  }> {
+    const convo = await this.requireConversationForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+    );
+    const messages = await this.fetchMessagesWithCitations(
+      schemaName,
+      conversationId,
+    );
+    return { conversation: convo, messages };
+  }
+
   private async fetchMessages(
     schemaName: string,
     conversationId: string,
@@ -535,6 +575,53 @@ export class ConversationsService {
         createdAt: String(row.created_at),
       }));
     });
+  }
+
+  /**
+   * Same ordered message history as `fetchMessages`, but each bot message is
+   * joined to its `message_citations` (ordered by `ordinal`) so a resuming
+   * widget can re-render citation chips. Fetched in two queries (messages,
+   * then all citations for the conversation) and stitched in memory to keep it
+   * a single indexed scan per table rather than an N+1 per message.
+   */
+  private async fetchMessagesWithCitations(
+    schemaName: string,
+    conversationId: string,
+  ): Promise<MessageRowWithCitations[]> {
+    const messages = await this.fetchMessages(schemaName, conversationId);
+    if (messages.length === 0) return [];
+    const citationRows = await this.tenantDb.withTenant(
+      schemaName,
+      async (db) => {
+        const r = await db.execute(
+          sql`SELECT mc.message_id, mc.document_id, mc.document_title, mc.origin_url
+              FROM message_citations mc
+              JOIN messages m ON m.id = mc.message_id
+              WHERE m.conversation_id = ${conversationId}
+              ORDER BY mc.message_id, mc.ordinal`,
+        );
+        return r.rows as {
+          message_id: string;
+          document_id: string;
+          document_title: string;
+          origin_url: string | null;
+        }[];
+      },
+    );
+    const byMessage = new Map<string, MessageCitation[]>();
+    for (const row of citationRows) {
+      const list = byMessage.get(row.message_id) ?? [];
+      list.push({
+        documentId: row.document_id,
+        documentTitle: row.document_title,
+        originUrl: row.origin_url ?? null,
+      });
+      byMessage.set(row.message_id, list);
+    }
+    return messages.map((m) => ({
+      ...m,
+      citations: byMessage.get(m.id) ?? [],
+    }));
   }
 
   async agentMessage(

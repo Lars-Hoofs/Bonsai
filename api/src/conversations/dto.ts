@@ -18,6 +18,10 @@ export class PostMessageDto {
   @IsString() @Length(1, 4000) content!: string;
 }
 
+export class ResumeConversationDto {
+  @IsString() @Length(1, 512) visitorSecret!: string;
+}
+
 export class EscalateDto {
   @IsOptional() @IsString() @Length(1, 500) reason?: string;
 }

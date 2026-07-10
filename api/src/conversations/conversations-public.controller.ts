@@ -22,6 +22,7 @@ import { PublicWidgetGuard } from './public-widget.guard';
 import {
   EscalateDto,
   PostMessageDto,
+  ResumeConversationDto,
   StartConversationDto,
   SubmitCsatDto,
   SubmitMessageFeedbackDto,
@@ -94,6 +95,31 @@ export class ConversationsPublicController {
       conversationId,
       dto.content,
       visitorSecret,
+    );
+  }
+
+  /**
+   * Resume/rehydrate an existing conversation on widget reload (#13). A
+   * returning visitor persists their conversation id + visitor secret
+   * client-side (e.g. localStorage); on reload the widget POSTs the secret in
+   * the body to re-open the conversation and get back its full message
+   * history (with bot citations) to rebuild the transcript. Same ownership
+   * rules as every other visitor call: 404 for an unknown id, 401 for a
+   * wrong/missing secret, and no conversation data leaks in either case.
+   */
+  @Post(':conversationId/resume')
+  @UseGuards(RateLimitGuard)
+  resume(
+    @Req() req: WidgetKeyedRequest,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Body() dto: ResumeConversationDto,
+  ) {
+    const { schemaName, projectId } = requireWidgetKey(req);
+    return this.conversations.resumeForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      dto.visitorSecret,
     );
   }
 
