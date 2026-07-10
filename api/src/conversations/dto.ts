@@ -49,6 +49,11 @@ export class AssignConversationDto {
   @IsOptional() @IsUUID() agentUserId?: string;
 }
 
+export class TransferConversationDto {
+  @IsUUID() toAgentUserId!: string;
+  @IsOptional() @IsString() @Length(1, 500) note?: string;
+}
+
 export class SubmitCsatDto {
   @IsInt() @Min(1) @Max(5) score!: number;
   @IsOptional() @IsString() @Length(1, 2000) comment?: string;

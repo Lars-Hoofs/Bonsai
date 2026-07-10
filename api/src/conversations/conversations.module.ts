@@ -6,6 +6,7 @@ import { ApiKeysModule } from '../apikeys/apikeys.module';
 import { PresenceModule } from '../presence/presence.module';
 import { ModerationModule } from '../moderation/moderation.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AuthModule } from '../auth/auth.module';
 import {
   AgentPresenceController,
   ConversationsController,
@@ -26,6 +27,7 @@ import { PublicWidgetGuard } from './public-widget.guard';
     PresenceModule,
     ModerationModule,
     NotificationsModule,
+    AuthModule,
   ],
   // ConversationSearchController is registered before ConversationsController
   // so its static sub-routes (tags, saved-filters, search) win over the
