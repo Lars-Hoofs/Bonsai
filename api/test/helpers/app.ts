@@ -48,6 +48,7 @@ export async function buildTestApp(
     nearDupThreshold: 0.97,
     frustrationAutoEscalateEnabled: true,
     frustrationRefusalStreak: 2,
+    profanityFilterEnabled: true,
     costPer1kTokens: 0,
     estTokensPerAnswer: 1500,
     // SMTP left unset: MailService stays a no-op so tests never send real mail.

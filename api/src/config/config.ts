@@ -190,6 +190,17 @@ const schema = z.object({
   // including the answer just computed) that counts as a frustration signal
   // on its own, even without explicit negative wording.
   FRUSTRATION_REFUSAL_STREAK: z.coerce.number().int().positive().default(2),
+  // Profanity/abuse filter on visitor input (#31): a self-hosted heuristic
+  // wordlist filter (no paid API) that screens inbound visitor messages
+  // before they reach the answer pipeline. This env flag is the global
+  // kill-switch; actual behavior is still gated PER PROJECT via
+  // `projects.settings.profanityFilter` ({ enabled, action, extraTerms,
+  // allowTerms }), which is off unless a project opts in — so with this on
+  // (the default) and no project config, the filter never triggers.
+  PROFANITY_FILTER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   // Usage/cost analytics (#43): rough cost estimate = answers *
   // EST_TOKENS_PER_ANSWER / 1000 * COST_PER_1K_TOKENS. Both default to values
   // that make the estimate a no-op (price 0 => cost always 0) so there's no
@@ -278,6 +289,7 @@ export interface AppConfig {
   nearDupThreshold: number;
   frustrationAutoEscalateEnabled: boolean;
   frustrationRefusalStreak: number;
+  profanityFilterEnabled: boolean;
   costPer1kTokens: number;
   estTokensPerAnswer: number;
   smtpHost?: string;
@@ -347,6 +359,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     nearDupThreshold: d.NEAR_DUP_THRESHOLD,
     frustrationAutoEscalateEnabled: d.FRUSTRATION_AUTO_ESCALATE_ENABLED,
     frustrationRefusalStreak: d.FRUSTRATION_REFUSAL_STREAK,
+    profanityFilterEnabled: d.PROFANITY_FILTER_ENABLED,
     costPer1kTokens: d.COST_PER_1K_TOKENS,
     estTokensPerAnswer: d.EST_TOKENS_PER_ANSWER,
     smtpHost: d.SMTP_HOST,
