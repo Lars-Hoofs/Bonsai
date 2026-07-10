@@ -11,6 +11,8 @@ import {
 } from './conversations.controller';
 import { ConversationsPublicController } from './conversations-public.controller';
 import { ConversationsService } from './conversations.service';
+import { ConversationSearchController } from './conversation-search.controller';
+import { ConversationSearchService } from './conversation-search.service';
 import { ChatGateway } from './chat.gateway';
 import { PublicWidgetGuard } from './public-widget.guard';
 
@@ -23,11 +25,20 @@ import { PublicWidgetGuard } from './public-widget.guard';
     PresenceModule,
     ModerationModule,
   ],
+  // ConversationSearchController is registered before ConversationsController
+  // so its static sub-routes (tags, saved-filters, search) win over the
+  // latter's `:conversationId` param route under the same base path.
   controllers: [
+    ConversationSearchController,
     ConversationsController,
     ConversationsPublicController,
     AgentPresenceController,
   ],
-  providers: [ConversationsService, ChatGateway, PublicWidgetGuard],
+  providers: [
+    ConversationsService,
+    ConversationSearchService,
+    ChatGateway,
+    PublicWidgetGuard,
+  ],
 })
 export class ConversationsModule {}
