@@ -290,6 +290,17 @@ const schema = z.object({
   WHISPER_API_KEY: z.string().optional(),
   WHISPER_MODEL: z.string().default('whisper-1'),
   WHISPER_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+  // GDPR retention auto-purge (#47): how often the in-process reaper scans
+  // every active tenant/project for conversations older than the project's
+  // configured `retention_days` window and deletes them. In-process interval
+  // (no Redis dependency) so it works in the base self-hosted deploy. Default
+  // 6h — retention is a coarse, day-granularity policy, so a frequent scan
+  // buys nothing. The reaper is inert until a project sets a retention window.
+  RETENTION_PURGE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(21_600_000),
   // Self-hosted SMTP mail (free — no paid email provider). Optional: when
   // SMTP_HOST is unset, MailService is a no-op (logs at debug only), so
   // dev/test never send real mail. Fill these in for a real deployment.
@@ -500,6 +511,7 @@ export interface AppConfig {
   whisperApiKey?: string;
   whisperModel: string;
   whisperTimeoutMs: number;
+  retentionPurgeIntervalMs: number;
   smtpHost?: string;
   smtpPort: number;
   smtpUser?: string;
@@ -590,6 +602,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     whisperApiKey: d.WHISPER_API_KEY,
     whisperModel: d.WHISPER_MODEL,
     whisperTimeoutMs: d.WHISPER_TIMEOUT_MS,
+    retentionPurgeIntervalMs: d.RETENTION_PURGE_INTERVAL_MS,
     smtpHost: d.SMTP_HOST,
     smtpPort: d.SMTP_PORT,
     smtpUser: d.SMTP_USER,

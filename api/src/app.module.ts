@@ -38,6 +38,7 @@ import { ModerationModule } from './moderation/moderation.module';
 import { UnansweredQuestionsModule } from './unanswered-questions/unanswered-questions.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ReportsModule } from './reports/reports.module';
+import { GdprModule } from './gdpr/gdpr.module';
 
 @Module({
   imports: [
@@ -77,6 +78,7 @@ import { ReportsModule } from './reports/reports.module';
     UnansweredQuestionsModule,
     NotificationsModule,
     ReportsModule,
+    GdprModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],

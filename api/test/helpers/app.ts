@@ -89,6 +89,7 @@ export async function buildTestApp(
     whisperEnabled: false,
     whisperModel: 'whisper-1',
     whisperTimeoutMs: 300_000,
+    retentionPurgeIntervalMs: 21_600_000,
     // SMTP left unset: MailService stays a no-op so tests never send real mail.
     smtpPort: 587,
     smtpSecure: false,
