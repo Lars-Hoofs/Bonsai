@@ -42,3 +42,13 @@ export class SubmitCsatDto {
 export class SubmitMessageFeedbackDto {
   @IsIn(['up', 'down']) rating!: 'up' | 'down';
 }
+
+/**
+ * Multipart body accompanying a visitor attachment upload. The file itself
+ * arrives via the `file` multipart part (handled by FileInterceptor); this is
+ * just the optional visitor-supplied caption for the message the upload
+ * creates.
+ */
+export class UploadAttachmentDto {
+  @IsOptional() @IsString() @Length(1, 4000) caption?: string;
+}

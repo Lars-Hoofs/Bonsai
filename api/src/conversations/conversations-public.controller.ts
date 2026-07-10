@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -8,8 +9,11 @@ import {
   Post,
   Req,
   UnauthorizedException,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { Public } from '../auth/public.decorator';
 import {
@@ -19,13 +23,21 @@ import {
 import { ResolvedWidgetKey } from '../apikeys/apikeys.service';
 import { ConversationsService } from './conversations.service';
 import { PublicWidgetGuard } from './public-widget.guard';
+import { MAX_ATTACHMENT_BYTES } from './attachment-validation';
 import {
   EscalateDto,
   PostMessageDto,
   StartConversationDto,
   SubmitCsatDto,
   SubmitMessageFeedbackDto,
+  UploadAttachmentDto,
 } from './dto';
+
+interface UploadedFileLike {
+  originalname: string;
+  mimetype: string;
+  buffer: Buffer;
+}
 
 interface WidgetKeyedRequest extends Request {
   widgetKey?: ResolvedWidgetKey;
@@ -94,6 +106,48 @@ export class ConversationsPublicController {
       conversationId,
       dto.content,
       visitorSecret,
+    );
+  }
+
+  /**
+   * Visitor uploads a file/image within their conversation (#14). Multipart
+   * field `file`; the multer interceptor caps raw bytes at
+   * `MAX_ATTACHMENT_BYTES` (mapped to 413 automatically), and the service
+   * re-validates the declared type + size against the allow-list. Ownership is
+   * proven by the per-conversation visitor secret, as with every other
+   * visitor-facing mutation.
+   */
+  @Post(':conversationId/attachments')
+  @UseGuards(RateLimitGuard)
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: MAX_ATTACHMENT_BYTES } }),
+  )
+  async uploadAttachment(
+    @Req() req: WidgetKeyedRequest,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @UploadedFile() file: UploadedFileLike | undefined,
+    @Body() dto: UploadAttachmentDto,
+    @Headers('x-bonsai-visitor-secret') visitorSecret: string | undefined,
+  ) {
+    const { tenantId, schemaName, projectId } = requireWidgetKey(req);
+    if (!visitorSecret) {
+      throw new UnauthorizedException('Missing visitor secret');
+    }
+    if (!file) {
+      throw new BadRequestException('No file uploaded (field "file")');
+    }
+    return this.conversations.addVisitorAttachment(
+      tenantId,
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+      {
+        filename: file.originalname,
+        contentType: file.mimetype,
+        buffer: file.buffer,
+      },
+      dto.caption,
     );
   }
 

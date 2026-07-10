@@ -1,5 +1,11 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from 'node:crypto';
+import {
+  BadRequestException,
   Inject,
   Injectable,
   NotFoundException,
@@ -14,12 +20,15 @@ import { UsageService } from '../usage/usage.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { AuditService } from '../audit/audit.service';
 import { PresenceService } from '../presence/presence.service';
+import { StorageService } from '../storage/storage.service';
+import { sanitizeFilename } from '../storage/sanitize-filename';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
 import { isOpen } from './business-hours';
 import type { BusinessHours } from './business-hours';
 import { isFrustrated } from './frustration';
+import { validateAttachment } from './attachment-validation';
 
 const DEFAULT_HANDOVER_MESSAGE = 'Gesprek doorgezet naar een medewerker.';
 const DEFAULT_AFTER_HOURS_MESSAGE =
@@ -95,6 +104,28 @@ export interface MessageRow {
   createdAt: string;
 }
 
+export interface AttachmentRow {
+  id: string;
+  conversationId: string;
+  messageId: string | null;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+function mapAttachment(r: Record<string, unknown>): AttachmentRow {
+  return {
+    id: r.id as string,
+    conversationId: r.conversation_id as string,
+    messageId: (r.message_id as string | null) ?? null,
+    filename: r.filename as string,
+    contentType: r.content_type as string,
+    sizeBytes: Number(r.size_bytes),
+    createdAt: String(r.created_at),
+  };
+}
+
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -106,6 +137,7 @@ export class ConversationsService {
     private readonly metrics: MetricsService,
     private readonly presence: PresenceService,
     private readonly audit: AuditService,
+    private readonly storage: StorageService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
@@ -486,14 +518,19 @@ export class ConversationsService {
     schemaName: string,
     projectId: string,
     conversationId: string,
-  ): Promise<{ conversation: ConversationSummary; messages: MessageRow[] }> {
+  ): Promise<{
+    conversation: ConversationSummary;
+    messages: MessageRow[];
+    attachments: AttachmentRow[];
+  }> {
     const convo = await this.requireConversation(
       schemaName,
       projectId,
       conversationId,
     );
     const messages = await this.fetchMessages(schemaName, conversationId);
-    return { conversation: convo, messages };
+    const attachments = await this.fetchAttachments(schemaName, conversationId);
+    return { conversation: convo, messages, attachments };
   }
 
   /**
@@ -506,7 +543,11 @@ export class ConversationsService {
     projectId: string,
     conversationId: string,
     visitorSecret: string,
-  ): Promise<{ conversation: ConversationSummary; messages: MessageRow[] }> {
+  ): Promise<{
+    conversation: ConversationSummary;
+    messages: MessageRow[];
+    attachments: AttachmentRow[];
+  }> {
     const convo = await this.requireConversationForVisitor(
       schemaName,
       projectId,
@@ -514,7 +555,22 @@ export class ConversationsService {
       visitorSecret,
     );
     const messages = await this.fetchMessages(schemaName, conversationId);
-    return { conversation: convo, messages };
+    const attachments = await this.fetchAttachments(schemaName, conversationId);
+    return { conversation: convo, messages, attachments };
+  }
+
+  private async fetchAttachments(
+    schemaName: string,
+    conversationId: string,
+  ): Promise<AttachmentRow[]> {
+    return this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT * FROM message_attachments
+            WHERE conversation_id = ${conversationId}
+            ORDER BY created_at`,
+      );
+      return r.rows.map((row) => mapAttachment(row));
+    });
   }
 
   private async fetchMessages(
@@ -710,6 +766,135 @@ export class ConversationsService {
             ON CONFLICT (message_id) DO UPDATE SET rating = EXCLUDED.rating, created_at = now()`,
       );
     });
+  }
+
+  /**
+   * Visitor uploads a file/image within their conversation (#14). Ownership is
+   * proven the same way as every other visitor-facing mutation (id+project
+   * lookup, then constant-time secret comparison). The raw bytes are stored in
+   * object storage (MinIO/S3); a `messages` row (role 'visitor') anchors the
+   * upload in the transcript so agents see it inline, and a
+   * `message_attachments` row records the metadata + storage key.
+   *
+   * Type/size are validated twice: the multer interceptor caps raw bytes at
+   * the route (a hard DoS guard), and `validateAttachment` re-checks the
+   * declared MIME type against the allow-list and the size here (defence in
+   * depth — the interceptor limit alone doesn't restrict type). Requires
+   * object storage to be configured; without it there is nowhere to keep the
+   * bytes, so the upload is refused rather than silently dropped.
+   */
+  async addVisitorAttachment(
+    tenantId: string,
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+    file: { filename: string; contentType: string; buffer: Buffer },
+    caption?: string,
+  ): Promise<AttachmentRow> {
+    await this.requireConversationForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+    );
+
+    const validation = validateAttachment({
+      contentType: file.contentType,
+      sizeBytes: file.buffer.length,
+    });
+    if (!validation.ok) {
+      throw new BadRequestException(validation.reason);
+    }
+
+    if (!this.storage.enabled) {
+      throw new BadRequestException(
+        'File attachments are not available (object storage not configured)',
+      );
+    }
+
+    const storageKey = `${schemaName}/visitor-attachments/${conversationId}/${randomUUID()}-${sanitizeFilename(
+      file.filename,
+    )}`;
+    await this.storage.put(storageKey, file.buffer, file.contentType);
+
+    const attachment = await this.tenantDb.withTenant(
+      schemaName,
+      async (db) => {
+        const content =
+          caption && caption.length > 0
+            ? caption
+            : `[bijlage: ${file.filename}]`;
+        const m = await db.execute(
+          sql`INSERT INTO messages (conversation_id, role, content)
+              VALUES (${conversationId}, 'visitor', ${content})
+              RETURNING id`,
+        );
+        const messageId = (m.rows[0] as { id: string }).id;
+        const a = await db.execute(
+          sql`INSERT INTO message_attachments
+                (conversation_id, message_id, filename, content_type, size_bytes, storage_key)
+              VALUES (${conversationId}, ${messageId}, ${file.filename}, ${file.contentType}, ${file.buffer.length}, ${storageKey})
+              RETURNING *`,
+        );
+        await db.execute(
+          sql`UPDATE conversations SET updated_at=now() WHERE id=${conversationId}`,
+        );
+        return mapAttachment(a.rows[0]);
+      },
+    );
+
+    this.emit(
+      tenantId,
+      projectId,
+      conversationId,
+      'visitor',
+      caption && caption.length > 0 ? caption : `[bijlage: ${file.filename}]`,
+    );
+
+    return attachment;
+  }
+
+  /**
+   * Lists a conversation's attachments (metadata only — never the bytes) for
+   * an agent viewing the conversation. Membership/role is enforced upstream by
+   * the guard; here we just verify the conversation belongs to the project.
+   */
+  async listAttachmentsForAgent(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+  ): Promise<AttachmentRow[]> {
+    await this.requireConversation(schemaName, projectId, conversationId);
+    return this.fetchAttachments(schemaName, conversationId);
+  }
+
+  /**
+   * Fetches one attachment's metadata + raw bytes so an agent can download it.
+   * Verifies the attachment belongs to a conversation in this project before
+   * reaching into object storage (so a leaked attachment id from another
+   * project/tenant can't be used to pull bytes).
+   */
+  async getAttachmentForAgent(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    attachmentId: string,
+  ): Promise<{ attachment: AttachmentRow; body: Buffer }> {
+    const row = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT a.* FROM message_attachments a
+            JOIN conversations c ON c.id = a.conversation_id
+            WHERE a.id = ${attachmentId}
+              AND a.conversation_id = ${conversationId}
+              AND c.project_id = ${projectId}`,
+      );
+      return r.rows[0];
+    });
+    if (!row) throw new NotFoundException('Attachment not found');
+    const attachment = mapAttachment(row);
+    const body = await this.storage.get(row.storage_key as string);
+    return { attachment, body };
   }
 
   private mapConversation(row: Record<string, unknown>): ConversationSummary {

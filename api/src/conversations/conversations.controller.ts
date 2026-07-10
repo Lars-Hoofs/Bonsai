@@ -3,15 +3,20 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseUUIDPipe,
   Post,
   Put,
   Query,
+  Res,
+  StreamableFile,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { CurrentUser, Tenant } from '../auth/auth.types';
 import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
+import { sanitizeFilename } from '../storage/sanitize-filename';
 import { PresenceService } from '../presence/presence.service';
 import type {
   AssigneeFilter,
@@ -84,6 +89,52 @@ export class ConversationsController {
       projectId,
       conversationId,
     );
+  }
+
+  /**
+   * Lists the visitor attachments on a conversation (metadata only) so an
+   * agent handling it can see what the visitor sent (#14).
+   */
+  @Get(':conversationId/attachments')
+  @RequireRole('agent')
+  listAttachments(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+  ) {
+    return this.conversations.listAttachmentsForAgent(
+      tenant.schemaName,
+      projectId,
+      conversationId,
+    );
+  }
+
+  /**
+   * Downloads a single visitor attachment's raw bytes. Streamed with the
+   * stored content type and an attachment Content-Disposition (never inline —
+   * a visitor-supplied file is never rendered in the agent's origin). The
+   * filename is sanitized before it reaches the header.
+   */
+  @Get(':conversationId/attachments/:attachmentId/download')
+  @RequireRole('agent')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async downloadAttachment(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { attachment, body } = await this.conversations.getAttachmentForAgent(
+      tenant.schemaName,
+      projectId,
+      conversationId,
+      attachmentId,
+    );
+    const safeName = sanitizeFilename(attachment.filename);
+    res.setHeader('Content-Type', attachment.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    return new StreamableFile(body);
   }
 
   @Post(':conversationId/agent-messages')
