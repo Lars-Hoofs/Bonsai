@@ -47,4 +47,16 @@ export class AnalyticsController {
     const parsed = days === undefined ? undefined : Number(days);
     return this.analytics.deflection(tenant.schemaName, projectId, parsed);
   }
+
+  // Post-chat survey aggregate (#40). Editor-only (stricter than the
+  // viewer-level default on the rest of this controller) since it surfaces
+  // end-of-chat visitor feedback.
+  @Get('survey')
+  @RequireRole('editor')
+  survey(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+  ) {
+    return this.analytics.survey(tenant.schemaName, projectId);
+  }
 }

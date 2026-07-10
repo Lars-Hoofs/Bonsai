@@ -75,6 +75,13 @@ export async function buildTestApp(
     frustrationRefusalStreak: 2,
     answerTemplatesEnabled: true,
     profanityFilterEnabled: true,
+    // Auto-close reaper left off in e2e so no background interval runs during
+    // tests; the post-chat survey surface is on so its widget route is
+    // exercised. (#40)
+    autoCloseEnabled: false,
+    autoCloseSweepIntervalMs: 300_000,
+    autoCloseDefaultIdleMinutes: 60,
+    postChatSurveyEnabled: true,
     costPer1kTokens: 0,
     estTokensPerAnswer: 1500,
     // Whisper transcription off by default in tests (audio/video uploads

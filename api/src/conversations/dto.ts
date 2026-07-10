@@ -124,3 +124,8 @@ export class SubmitAnsweredSignalDto {
   // "Did this answer your question?" — true = yes, false = no.
   @IsBoolean() answered!: boolean;
 }
+
+export class SubmitSurveyDto {
+  @IsInt() @Min(1) @Max(5) rating!: number;
+  @IsOptional() @IsString() @Length(1, 2000) comment?: string;
+}
