@@ -225,6 +225,22 @@ const schema = z.object({
     .string()
     .min(1)
     .default('dev-only-insecure-widget-preview-secret'),
+  // OCR fallback for scanned uploads (#24): self-hosted Tesseract via
+  // tesseract.js (in-process WASM — free, no external Docker service, no
+  // paid API). On by default. Languages are Tesseract language codes
+  // ('+'-joined for multi-language recognition); 'nld' is Dutch, matching
+  // this app's primary locale, with English as a fallback. Language
+  // traineddata is downloaded/cached by tesseract.js itself on first use of
+  // a given language — no bundling step required here.
+  OCR_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  OCR_LANGUAGES: z.string().min(1).default('nld+eng'),
+  // Cap on PDF pages rasterized for OCR (follow-up: PDF rasterization isn't
+  // implemented yet — see TesseractOcrProvider — but the cap is defined now
+  // so it's already config-driven when that lands).
+  OCR_MAX_PAGES: z.coerce.number().int().positive().default(20),
 });
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
@@ -304,6 +320,9 @@ export interface AppConfig {
   smtpFrom?: string;
   smtpSecure: boolean;
   widgetPreviewTokenSecret: string;
+  ocrEnabled: boolean;
+  ocrLanguages: string;
+  ocrMaxPages: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -375,5 +394,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     smtpFrom: d.SMTP_FROM,
     smtpSecure: d.SMTP_SECURE,
     widgetPreviewTokenSecret: d.WIDGET_PREVIEW_TOKEN_SECRET,
+    ocrEnabled: d.OCR_ENABLED,
+    ocrLanguages: d.OCR_LANGUAGES,
+    ocrMaxPages: d.OCR_MAX_PAGES,
   };
 }

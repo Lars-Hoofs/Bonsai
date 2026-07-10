@@ -5,6 +5,10 @@ import { AppModule } from '../../src/app.module';
 import { APP_CONFIG, AppConfig } from '../../src/config/config';
 import { PG_POOL } from '../../src/db/db.module';
 import { JWT_KEY_GETTER } from '../../src/auth/oidc.verifier';
+import {
+  OCR_PROVIDER,
+  OcrProvider,
+} from '../../src/knowledge/ingestion/ocr-provider';
 import { runControlPlaneMigrations } from '../../src/db/run-control-plane-migrations';
 import { makeTestIdp, TEST_AUDIENCE, TEST_ISSUER, TestIdp } from './oidc';
 import { HttpExceptionFilter } from '../../src/common/http-exception.filter';
@@ -13,6 +17,12 @@ import { requestIdMiddleware } from '../../src/common/request-id.middleware';
 export async function buildTestApp(
   pool: Pool,
   cfgOverrides: Partial<AppConfig> = {},
+  // Optional OCR provider stub: tests that exercise the OCR fallback path
+  // (#24) pass a stub here rather than letting the real Tesseract-backed
+  // provider run in tests. Undefined leaves the module's real provider wired
+  // (harmless — OCR only ever runs when a test also sets ocrEnabled: true
+  // AND uploads an image/PDF with negligible text).
+  ocrProviderOverride?: OcrProvider,
 ): Promise<{ app: INestApplication; idp: TestIdp }> {
   await runControlPlaneMigrations(pool);
   const idp = await makeTestIdp();
@@ -55,16 +65,28 @@ export async function buildTestApp(
     smtpPort: 587,
     smtpSecure: false,
     widgetPreviewTokenSecret: 'test-widget-preview-secret',
+    // OCR (#24) defaults: enabled, matching production, but real Tesseract
+    // never actually runs in tests unless a test both uploads an
+    // image/PDF with negligible text AND passes ocrProviderOverride above —
+    // see extractUploadText's shouldRunOcr gate.
+    ocrEnabled: true,
+    ocrLanguages: 'nld+eng',
+    ocrMaxPages: 20,
     ...cfgOverrides,
   };
-  const mod = await Test.createTestingModule({ imports: [AppModule] })
+  let builder = Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(APP_CONFIG)
     .useValue(cfg)
     .overrideProvider(PG_POOL)
     .useValue(pool)
     .overrideProvider(JWT_KEY_GETTER)
-    .useValue(idp.keyGetter)
-    .compile();
+    .useValue(idp.keyGetter);
+  if (ocrProviderOverride) {
+    builder = builder
+      .overrideProvider(OCR_PROVIDER)
+      .useValue(ocrProviderOverride);
+  }
+  const mod = await builder.compile();
   const app = mod.createNestApplication();
   app.use(requestIdMiddleware);
   app.useGlobalPipes(

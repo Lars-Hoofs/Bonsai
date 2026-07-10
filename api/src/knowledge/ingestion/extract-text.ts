@@ -1,3 +1,6 @@
+import { OCR_MIN_TEXT_LENGTH, shouldRunOcr } from './ocr-provider';
+import type { OcrProvider } from './ocr-provider';
+
 /**
  * Converts HTML to readable plain text: drops script/style, turns block tags
  * into newlines, strips remaining tags, decodes a few common entities, and
@@ -67,16 +70,50 @@ function withTimeout<T>(
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+/** Recognizes image uploads (jpg/png/etc): these have no "native" text
+ * extraction path at all — the only way to get text out of them is OCR. */
+export function isImageUpload(mimetype: string, filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return (
+    mimetype.startsWith('image/') ||
+    /\.(png|jpe?g|gif|bmp|tiff?|webp)$/.test(lower)
+  );
+}
+
+/** Recognizes PDF uploads, independent of whether the PDF text layer turns
+ * out to be empty/near-empty (scanned PDF) at extraction time. */
+export function isPdfUpload(mimetype: string, filename: string): boolean {
+  return mimetype.includes('pdf') || filename.toLowerCase().endsWith('.pdf');
+}
+
+const OCR_TIMEOUT_MS = 30_000;
+
+export interface ExtractUploadOptions {
+  /** Whether OCR fallback is enabled at all (mirrors config OCR_ENABLED). */
+  ocrEnabled?: boolean;
+  /** Injectable OCR seam — tests stub this; production wires the real
+   * self-hosted Tesseract-backed provider. Absent (e.g. no DI available)
+   * means OCR is skipped even if ocrEnabled is true. */
+  ocrProvider?: OcrProvider;
+}
+
 /**
  * Extracts plain text from an uploaded file buffer by content type / filename.
  * Text formats (txt, md, csv, html) are handled natively. Binary formats
  * (pdf, docx) require optional libraries; if unavailable we throw a clear error
- * rather than indexing garbage.
+ * rather than indexing garbage. Images have no native text extraction at all.
+ *
+ * After native extraction, if the result is empty/negligible AND the file is
+ * an image or PDF (i.e. plausibly a scanned document) AND OCR is enabled and
+ * a provider is supplied, OCR is run on the original buffer as a fallback.
+ * OCR failures are swallowed — the (empty/short) native text is kept rather
+ * than crashing ingestion; never surfaces raw OCR-engine errors to the caller.
  */
 export async function extractUploadText(
   filename: string,
   mimetype: string,
   buffer: Buffer,
+  options: ExtractUploadOptions = {},
 ): Promise<string> {
   const lower = filename.toLowerCase();
   const isHtml =
@@ -89,34 +126,70 @@ export async function extractUploadText(
     lower.endsWith('.md') ||
     lower.endsWith('.markdown') ||
     lower.endsWith('.csv');
-  const isPdf = mimetype.includes('pdf') || lower.endsWith('.pdf');
+  const isPdf = isPdfUpload(mimetype, filename);
   const isDocx =
     mimetype.includes('officedocument.wordprocessing') ||
     lower.endsWith('.docx');
+  const isImage = isImageUpload(mimetype, filename);
 
-  if (isHtml) return truncateExtractedText(htmlToText(buffer.toString('utf8')));
-  if (isText) return truncateExtractedText(buffer.toString('utf8').trim());
-  if (isPdf) {
-    const text = await withTimeout(
+  let text = '';
+  if (isHtml) {
+    text = truncateExtractedText(htmlToText(buffer.toString('utf8')));
+  } else if (isText) {
+    text = truncateExtractedText(buffer.toString('utf8').trim());
+  } else if (isPdf) {
+    const raw = await withTimeout(
       extractPdf(buffer),
       EXTRACTION_TIMEOUT_MS,
       'PDF extraction',
     );
-    return truncateExtractedText(text.trim());
-  }
-  if (isDocx) {
-    const text = await withTimeout(
+    text = truncateExtractedText(raw.trim());
+  } else if (isDocx) {
+    const raw = await withTimeout(
       extractDocx(buffer),
       EXTRACTION_TIMEOUT_MS,
       'DOCX extraction',
     );
-    return truncateExtractedText(text.trim());
+    text = truncateExtractedText(raw.trim());
+  } else if (!isImage) {
+    throw new Error(
+      `Unsupported upload type '${mimetype || filename}'. Supported: txt, md, csv, html, pdf, docx, and images (via OCR).`,
+    );
+  }
+  // Images fall through here with text === '' (no native extraction path),
+  // which is exactly the "negligible text" state shouldRunOcr checks for.
+
+  if (
+    options.ocrProvider &&
+    shouldRunOcr({
+      ocrEnabled: options.ocrEnabled ?? false,
+      extractedText: text,
+      isImage,
+      isPdf,
+    })
+  ) {
+    try {
+      const ocrText = await withTimeout(
+        options.ocrProvider.recognize(buffer, mimetype, filename),
+        OCR_TIMEOUT_MS,
+        'OCR',
+      );
+      if (ocrText.trim().length > 0) {
+        text = truncateExtractedText(ocrText.trim());
+      }
+    } catch {
+      // OCR is a best-effort fallback: on failure, keep whatever (possibly
+      // empty) text native extraction produced rather than crashing the
+      // upload. The source/document still ingests, just with little/no text.
+    }
   }
 
-  throw new Error(
-    `Unsupported upload type '${mimetype || filename}'. Supported: txt, md, csv, html, pdf, docx.`,
-  );
+  return text;
 }
+
+// Re-exported for callers that want to reason about the "empty text"
+// threshold without importing from ocr-provider directly.
+export { OCR_MIN_TEXT_LENGTH };
 
 // Heavy parsers are imported lazily so they (and pdfjs) only load when a binary
 // file is actually uploaded — keeping normal startup/tests light.

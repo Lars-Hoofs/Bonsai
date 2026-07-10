@@ -1,9 +1,11 @@
 import {
   BadRequestException,
-  Body,
   Controller,
+  Body,
   Delete,
   Get,
+  Inject,
+  Optional,
   Param,
   ParseUUIDPipe,
   Post,
@@ -18,11 +20,15 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { CurrentUser, Tenant } from '../auth/auth.types';
 import type { AuthUser, TenantRef } from '../auth/auth.types';
 import { RequireRole } from '../auth/roles.decorator';
+import { APP_CONFIG } from '../config/config';
+import type { AppConfig } from '../config/config';
 import { sanitizeFilename } from '../storage/sanitize-filename';
 import { StorageService } from '../storage/storage.service';
 import { KbBulkService, ImportSummary } from './bulk/kb-bulk.service';
 import { CreateSourceDto, ExportKnowledgeDto, ImportKnowledgeDto } from './dto';
 import { extractUploadText } from './ingestion/extract-text';
+import { OCR_PROVIDER } from './ingestion/ocr-provider';
+import type { OcrProvider } from './ingestion/ocr-provider';
 import { KnowledgeSourcesService } from './knowledge-sources.service';
 
 interface UploadedFileLike {
@@ -44,6 +50,13 @@ export class KnowledgeController {
     private readonly knowledge: KnowledgeSourcesService,
     private readonly storage: StorageService,
     private readonly bulk: KbBulkService,
+    // Optional so tests that construct KnowledgeController directly (no DI
+    // container) keep working unchanged; without a config, OCR is treated as
+    // disabled (extractUploadText requires ocrEnabled truthy to ever OCR).
+    @Optional() @Inject(APP_CONFIG) private readonly config?: AppConfig,
+    @Optional()
+    @Inject(OCR_PROVIDER)
+    private readonly ocrProvider?: OcrProvider,
   ) {}
 
   @Get('export')
@@ -129,6 +142,10 @@ export class KnowledgeController {
       file.originalname,
       file.mimetype,
       file.buffer,
+      {
+        ocrEnabled: this.config?.ocrEnabled ?? false,
+        ocrProvider: this.ocrProvider,
+      },
     );
     // Retain the raw file in object storage when configured (for re-processing,
     // download and audit); text extraction/indexing works regardless.
