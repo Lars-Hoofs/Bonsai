@@ -712,6 +712,43 @@ export class ConversationsService {
     });
   }
 
+  /**
+   * Post-chat survey (#40): the visitor submits a short end-of-chat survey
+   * (1-5 rating + optional comment) once a conversation has closed. Ownership
+   * is proven exactly like every other visitor-facing mutation
+   * (`requireConversationForVisitor`: 404 unknown id, 401 wrong/missing
+   * secret, nothing written in either case). One row per conversation keyed by
+   * `conversation_id`, so a visitor changing their mind before the widget
+   * unmounts is a plain idempotent upsert rather than an ever-growing history.
+   *
+   * Deliberately separate from in-chat CSAT (#23): CSAT is a satisfaction
+   * rating a visitor can leave at any time on the conversation itself, whereas
+   * this is the end-of-chat survey shown specifically after a close.
+   */
+  async submitSurvey(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+    rating: number,
+    comment?: string,
+  ): Promise<void> {
+    await this.requireConversationForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+    );
+    await this.tenantDb.withTenant(schemaName, (db) =>
+      db.execute(
+        sql`INSERT INTO post_chat_surveys (conversation_id, project_id, rating, comment)
+            VALUES (${conversationId}, ${projectId}, ${rating}, ${comment ?? null})
+            ON CONFLICT (conversation_id)
+            DO UPDATE SET rating = EXCLUDED.rating, comment = EXCLUDED.comment, created_at = now()`,
+      ),
+    );
+  }
+
   private mapConversation(row: Record<string, unknown>): ConversationSummary {
     return {
       id: row.id as string,

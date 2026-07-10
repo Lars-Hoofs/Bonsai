@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Headers,
+  Inject,
   Param,
   ParseUUIDPipe,
   Post,
@@ -17,6 +19,8 @@ import {
   rateLimitGuardFromConfig,
 } from '../usage/rate-limit.guard';
 import { ResolvedWidgetKey } from '../apikeys/apikeys.service';
+import { APP_CONFIG } from '../config/config';
+import type { AppConfig } from '../config/config';
 import { ConversationsService } from './conversations.service';
 import { PublicWidgetGuard } from './public-widget.guard';
 import {
@@ -25,6 +29,7 @@ import {
   StartConversationDto,
   SubmitCsatDto,
   SubmitMessageFeedbackDto,
+  SubmitSurveyDto,
 } from './dto';
 
 interface WidgetKeyedRequest extends Request {
@@ -63,7 +68,10 @@ function requireWidgetKey(req: WidgetKeyedRequest): ResolvedWidgetKey {
 @Public()
 @UseGuards(PublicWidgetGuard)
 export class ConversationsPublicController {
-  constructor(private readonly conversations: ConversationsService) {}
+  constructor(
+    private readonly conversations: ConversationsService,
+    @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+  ) {}
 
   @Post()
   @UseGuards(startConversationRateLimitGuard)
@@ -178,6 +186,38 @@ export class ConversationsPublicController {
       visitorSecret,
       messageId,
       dto.rating,
+    );
+    return { ok: true };
+  }
+
+  /**
+   * Post-chat survey submit (#40): the widget offers this once a conversation
+   * has closed. Gated by the `POST_CHAT_SURVEY_ENABLED` master flag — off
+   * disables the surface regardless of any per-project setting — then, like
+   * every other visitor mutation here, requires the per-conversation visitor
+   * secret (missing -> 401; wrong -> 401 inside the service).
+   */
+  @Post(':conversationId/survey')
+  async submitSurvey(
+    @Req() req: WidgetKeyedRequest,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Body() dto: SubmitSurveyDto,
+    @Headers('x-bonsai-visitor-secret') visitorSecret: string | undefined,
+  ): Promise<{ ok: true }> {
+    if (!this.cfg.postChatSurveyEnabled) {
+      throw new ForbiddenException('Post-chat survey is disabled');
+    }
+    const { schemaName, projectId } = requireWidgetKey(req);
+    if (!visitorSecret) {
+      throw new UnauthorizedException('Missing visitor secret');
+    }
+    await this.conversations.submitSurvey(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+      dto.rating,
+      dto.comment,
     );
     return { ok: true };
   }

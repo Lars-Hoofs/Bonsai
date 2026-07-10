@@ -27,6 +27,7 @@ export class MetricsService implements OnModuleDestroy {
   readonly httpRequestDuration: Histogram<'method' | 'route' | 'status_code'>;
   readonly answersTotal: Counter<'refused'>;
   readonly escalationsTotal: Counter<never>;
+  readonly conversationsAutoClosedTotal: Counter<never>;
   readonly ingestionTotal: Counter<'status'>;
   readonly llmCallsTotal: Counter<'provider'>;
   readonly embeddingCallsTotal: Counter<'provider'>;
@@ -54,6 +55,12 @@ export class MetricsService implements OnModuleDestroy {
     this.escalationsTotal = new Counter({
       name: 'bonsai_escalations_total',
       help: 'Conversations escalated/handed over to a human agent.',
+      registers: [this.registry],
+    });
+
+    this.conversationsAutoClosedTotal = new Counter({
+      name: 'bonsai_conversations_auto_closed_total',
+      help: 'Conversations closed by the idle auto-close reaper (#40).',
       registers: [this.registry],
     });
 

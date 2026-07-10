@@ -26,6 +26,12 @@ export interface CsatSummary {
   messageFeedbackDown: number;
 }
 
+export interface SurveySummary {
+  responses: number;
+  avgRating: number | null;
+  percentPositive: number;
+}
+
 // Visitor-entered free text can be arbitrarily long and may contain pasted
 // PII (names, addresses, order numbers, etc.). `unanswered` surfaces this
 // text verbatim to tenant staff for KB-improvement purposes, so the payload
@@ -158,6 +164,33 @@ export class AnalyticsService {
             : positiveConversations / ratedConversations,
         messageFeedbackUp: Number(row.feedback_up),
         messageFeedbackDown: Number(row.feedback_down),
+      };
+    });
+  }
+
+  /**
+   * Post-chat survey aggregate (#40): response count, average rating, and the
+   * share of responses rated >=4 ("positive"), over this project's
+   * `post_chat_surveys` rows. Editor-only (surfaces end-of-chat visitor
+   * feedback); scoped to the project via `project_id`.
+   */
+  async survey(schemaName: string, projectId: string): Promise<SurveySummary> {
+    return this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(sql`
+        SELECT
+          count(*) AS responses,
+          avg(rating) AS avg_rating,
+          count(*) FILTER (WHERE rating >= 4) AS positive
+        FROM post_chat_surveys
+        WHERE project_id = ${projectId}
+      `);
+      const row = r.rows[0];
+      const responses = Number(row.responses);
+      const positive = Number(row.positive);
+      return {
+        responses,
+        avgRating: row.avg_rating == null ? null : Number(row.avg_rating),
+        percentPositive: responses === 0 ? 0 : positive / responses,
       };
     });
   }

@@ -42,3 +42,8 @@ export class SubmitCsatDto {
 export class SubmitMessageFeedbackDto {
   @IsIn(['up', 'down']) rating!: 'up' | 'down';
 }
+
+export class SubmitSurveyDto {
+  @IsInt() @Min(1) @Max(5) rating!: number;
+  @IsOptional() @IsString() @Length(1, 2000) comment?: string;
+}

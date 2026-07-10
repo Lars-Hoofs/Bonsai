@@ -28,6 +28,10 @@ export const KNOWN_SETTINGS_KEYS = [
   'followupSuggestionsEnabled',
   'dedupEnabled',
   'retrievalWindow',
+  'autoCloseEnabled',
+  'autoCloseIdleMinutes',
+  'postChatSurveyEnabled',
+  'postChatSurveyPrompt',
 ] as const;
 
 export type KnownSettingsKey = (typeof KNOWN_SETTINGS_KEYS)[number];
@@ -40,6 +44,8 @@ const BOOLEAN_KEYS: ReadonlySet<KnownSettingsKey> = new Set([
   'toolCallingEnabled',
   'followupSuggestionsEnabled',
   'dedupEnabled',
+  'autoCloseEnabled',
+  'postChatSurveyEnabled',
 ]);
 
 /** True for a plain `{}`-style object — excludes arrays, null, class instances. */
@@ -169,6 +175,27 @@ export function assertSettingsPatchShape(
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
       throw new BadRequestException(
         'Invalid retrievalWindow: must be an integer >= 0',
+      );
+    }
+  }
+
+  // Auto-close idle threshold (#40): minutes of inactivity after which the
+  // reaper closes a conversation. Must be a positive integer; a project that
+  // enables auto-close without a threshold falls back to the reaper's default.
+  if ('autoCloseIdleMinutes' in input) {
+    const v = input.autoCloseIdleMinutes;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+      throw new BadRequestException(
+        'Invalid autoCloseIdleMinutes: must be an integer >= 1',
+      );
+    }
+  }
+
+  if ('postChatSurveyPrompt' in input) {
+    const v = input.postChatSurveyPrompt;
+    if (typeof v !== 'string') {
+      throw new BadRequestException(
+        'Invalid postChatSurveyPrompt: must be a string',
       );
     }
   }

@@ -460,4 +460,110 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
         .expect(400);
     });
   });
+
+  describe('post-chat survey (#40)', () => {
+    async function startConversation(): Promise<{
+      conversationId: string;
+      visitorSecret: string;
+    }> {
+      const started = await request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', widgetKey)
+        .send({ language: 'nl' })
+        .expect(201);
+      const { id: conversationId, visitorSecret } = started.body as StartBody;
+      return { conversationId, visitorSecret };
+    }
+
+    it('accepts a survey rating + comment from the owning visitor and upserts it', async () => {
+      const { conversationId, visitorSecret } = await startConversation();
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/survey`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ rating: 5, comment: 'Snel geholpen!' })
+        .expect(201);
+
+      // Idempotent overwrite — visitor changes their mind.
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/survey`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ rating: 3 })
+        .expect(201);
+
+      const row = await pool.query<{ rating: number; comment: string | null }>(
+        `SELECT rating, comment FROM "${tenantSchema}".post_chat_surveys WHERE conversation_id = $1`,
+        [conversationId],
+      );
+      expect(row.rowCount).toBe(1);
+      expect(row.rows[0].rating).toBe(3);
+      expect(row.rows[0].comment).toBeNull();
+    });
+
+    it('rejects a survey with wrong/missing visitor secret and never writes', async () => {
+      const { conversationId } = await startConversation();
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/survey`)
+        .set('x-bonsai-key', widgetKey)
+        .send({ rating: 4 })
+        .expect(401);
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/survey`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', 'wrong-secret-padding-0000000000000000')
+        .send({ rating: 4 })
+        .expect(401);
+
+      const row = await pool.query(
+        `SELECT rating FROM "${tenantSchema}".post_chat_surveys WHERE conversation_id = $1`,
+        [conversationId],
+      );
+      expect(row.rowCount).toBe(0);
+    });
+
+    it('rejects out-of-range survey ratings', async () => {
+      const { conversationId, visitorSecret } = await startConversation();
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/survey`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ rating: 0 })
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/survey`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ rating: 6 })
+        .expect(400);
+    });
+
+    it('exposes an aggregate to editors via the analytics endpoint', async () => {
+      const { conversationId, visitorSecret } = await startConversation();
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/survey`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ rating: 5 })
+        .expect(201);
+
+      const agg = await request(app.getHttpServer())
+        .get(`/v1/tenants/${tenantId}/projects/${projectId}/analytics/survey`)
+        .set(auth())
+        .expect(200);
+      const body = agg.body as {
+        responses: number;
+        avgRating: number | null;
+        percentPositive: number;
+      };
+      expect(body.responses).toBeGreaterThanOrEqual(1);
+      expect(body.avgRating).not.toBeNull();
+      expect(body.percentPositive).toBeGreaterThan(0);
+    });
+  });
 });
