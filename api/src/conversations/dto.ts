@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -41,4 +42,9 @@ export class SubmitCsatDto {
 
 export class SubmitMessageFeedbackDto {
   @IsIn(['up', 'down']) rating!: 'up' | 'down';
+}
+
+export class SubmitAnsweredSignalDto {
+  // "Did this answer your question?" — true = yes, false = no.
+  @IsBoolean() answered!: boolean;
 }
