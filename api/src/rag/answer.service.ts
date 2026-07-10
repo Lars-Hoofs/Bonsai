@@ -14,6 +14,8 @@ import type { LlmMessage, LlmProvider } from './llm-provider';
 import { MetricsService } from '../metrics/metrics.service';
 import { AnswerCacheService } from './answer-cache.service';
 import { detectLanguage } from './language-detect';
+import { ConnectorToolService } from '../connectors/connector-tool.service';
+import type { ToolSource } from '../connectors/connector-tool.service';
 
 export interface Citation {
   index: number;
@@ -22,6 +24,24 @@ export interface Citation {
   documentTitle: string;
   sourceId: string;
   originUrl: string | null;
+}
+
+/**
+ * Common shape consumed by `buildPrompt`/`parseCitations`/`selfCheck`/
+ * `claimCheck`/`suggestFollowups`: a superset of `RetrievedChunk`'s fields
+ * that a live tool-call result can also satisfy (see `toPromptSource`), so
+ * the tool source can be prepended to the KB chunks and flow through the
+ * exact same citation-enforcement/self-check/rendering code paths as any
+ * other source.
+ */
+interface PromptSource {
+  chunkId: string;
+  documentId: string;
+  documentTitle: string;
+  sourceId: string;
+  originUrl: string | null;
+  text: string;
+  expandedText?: string;
 }
 
 export interface AnswerResult {
@@ -101,6 +121,12 @@ const CLAIM_CHECK_SYSTEM_TAG = 'BONSAI_CLAIM_CHECK_V1';
  * knowledge-base content can never impersonate it. */
 const FOLLOWUP_SYSTEM_TAG = 'BONSAI_FOLLOWUP_V1';
 
+/** Sentinel documentId/chunkId prefix for a live tool-call source spliced
+ * into the sources list (see `answer()`), so citation-enforcement/self-check
+ * treat it like any other source while its identity is still visibly
+ * distinguishable from a real KB chunk in logs/debugging. */
+const TOOL_SOURCE_ID_PREFIX = 'connector:';
+
 @Injectable()
 export class AnswerService {
   constructor(
@@ -115,6 +141,10 @@ export class AnswerService {
     // Optional so tests that construct AnswerService directly (without a DI
     // container) keep working unchanged: no cache -> always compute.
     @Optional() private readonly cache?: AnswerCacheService,
+    // Optional so tests that construct AnswerService directly (without a DI
+    // container) keep working unchanged: no tool service -> no tool calls,
+    // ever (see `attemptToolCall`), regardless of `cfg.toolCallingEnabled`.
+    @Optional() private readonly tool?: ConnectorToolService,
   ) {}
 
   async answer(
@@ -157,12 +187,32 @@ export class AnswerService {
             Math.min(1, Math.max(...chunks.map((c) => c.similarity))),
           );
 
-    // Confidence gate: below the (per-project) threshold we do NOT guess.
-    if (chunks.length === 0 || retrievalScore < threshold) {
+    // Live tool-calling (part 2): before gating, give a tenant-configured
+    // connector a chance to supply LIVE data as an additional citable
+    // source. Deliberately attempted BEFORE the confidence gate so that a
+    // tool source alone (with 0 KB chunks, or chunks below threshold) can
+    // still let the pipeline proceed — see the gate check below.
+    const toolSource = await this.attemptToolCall(
+      schemaName,
+      projectId,
+      question,
+    );
+
+    // Confidence gate: below the (per-project) threshold we do NOT guess —
+    // UNLESS a live tool source was returned, in which case it alone can
+    // support an answer even with an empty/low-confidence KB retrieval.
+    if (!toolSource && (chunks.length === 0 || retrievalScore < threshold)) {
       return this.refusal(retrievalScore, question);
     }
 
-    const messages = this.buildPrompt(question, chunks);
+    // Prepend the tool source (if any) as source [1], shifting chunk
+    // indices so citation-enforcement/self-check treat it like any other
+    // source (see PromptSource / toPromptSource).
+    const sources: PromptSource[] = toolSource
+      ? [toPromptSource(toolSource), ...chunks]
+      : chunks;
+
+    const messages = this.buildPrompt(question, sources);
     const raw = await this.llm.complete(messages, { temperature: 0.1 });
     this.metrics?.llmCallsTotal.inc({ provider: this.llmProviderLabel() });
 
@@ -171,7 +221,7 @@ export class AnswerService {
     // treated as ungrounded and refused. This is purely syntactic and must
     // never be the *only* grounding check — the self-check below is what
     // actually verifies the claims, and it always runs.
-    const cited = this.parseCitations(raw, chunks);
+    const cited = this.parseCitations(raw, sources);
     if (cited.length === 0) {
       return this.ungroundedRefusal(retrievalScore, question);
     }
@@ -193,8 +243,8 @@ export class AnswerService {
     if (this.cfg.selfCheckEnabled) {
       const verdict =
         this.cfg.verificationMode === 'claim-nli'
-          ? await this.claimCheck(raw, chunks)
-          : await this.selfCheck(raw, chunks);
+          ? await this.claimCheck(raw, sources)
+          : await this.selfCheck(raw, sources);
       if (!verdict) {
         return this.ungroundedRefusal(retrievalScore, question);
       }
@@ -211,7 +261,7 @@ export class AnswerService {
 
     const citationCoverage = Math.min(
       1,
-      cited.length / Math.min(3, chunks.length),
+      cited.length / Math.min(3, sources.length),
     );
     const confidence = clamp01(
       0.45 * retrievalScore + 0.35 * citationCoverage + 0.2,
@@ -220,7 +270,7 @@ export class AnswerService {
     const suggestedQuestions = await this.suggestFollowups(
       question,
       raw,
-      chunks,
+      sources,
     );
 
     this.metrics?.answersTotal.inc({ refused: 'false' });
@@ -285,6 +335,43 @@ export class AnswerService {
   }
 
   /**
+   * Live tool-calling (part 2 of the connectors feature): gives a
+   * tenant-configured connector a chance to supply LIVE data as an
+   * additional citable source, via `ConnectorToolService.maybeCall`.
+   *
+   * Deliberately conservative, mirroring `expandQuery`/`suggestFollowups`'s
+   * philosophy: only attempted when `toolCallingEnabled` is on, AND a REAL
+   * llm is configured (`cfg.llmApiUrl` set), AND a `ConnectorToolService`
+   * was actually injected (absent when a test constructs `AnswerService`
+   * directly without a DI container) — so fake-LLM tests remain
+   * deterministic/unaffected regardless of this flag. ANY error inside
+   * `maybeCall` is already caught there and yields `null`; nothing here can
+   * throw and no error can turn into a refusal — a tool-call failure always
+   * degrades to KB-only.
+   */
+  private async attemptToolCall(
+    schemaName: string,
+    projectId: string,
+    question: string,
+  ): Promise<ToolSource | null> {
+    if (!this.cfg.toolCallingEnabled || !this.cfg.llmApiUrl || !this.tool) {
+      return null;
+    }
+    const source = await this.tool.maybeCall(
+      schemaName,
+      projectId,
+      question,
+      this.llm,
+    );
+    if (source) {
+      this.metrics?.llmCallsTotal.inc({
+        provider: this.llmProviderLabel('tool-router'),
+      });
+    }
+    return source;
+  }
+
+  /**
    * Multi-query retrieval (A5): proposes up to 2 alternative phrasings of
    * `question` (same language) via an extra LLM call, so short/vague
    * questions get better retrieval recall when fused across queries in
@@ -335,7 +422,7 @@ export class AnswerService {
   /** Returns true if an independent model call judges the answer fully grounded. */
   private async selfCheck(
     answer: string,
-    chunks: { text: string; expandedText?: string; documentTitle: string }[],
+    chunks: PromptSource[],
   ): Promise<boolean> {
     const sources = renderSources(chunks);
     const messages: LlmMessage[] = [
@@ -379,7 +466,7 @@ export class AnswerService {
    */
   private async claimCheck(
     answer: string,
-    chunks: { text: string; expandedText?: string; documentTitle: string }[],
+    chunks: PromptSource[],
   ): Promise<boolean> {
     const sources = renderSources(chunks);
     const messages: LlmMessage[] = [
@@ -423,7 +510,7 @@ export class AnswerService {
   private async suggestFollowups(
     question: string,
     answer: string,
-    chunks: { text: string; expandedText?: string; documentTitle: string }[],
+    chunks: PromptSource[],
   ): Promise<string[]> {
     if (!this.cfg.followupSuggestionsEnabled || !this.cfg.llmApiUrl) {
       return [];
@@ -465,16 +552,13 @@ export class AnswerService {
    * calls are distinguishable from the primary completion without adding a
    * second label dimension. */
   private llmProviderLabel(
-    kind?: 'self-check' | 'claim-check' | 'expand' | 'followup',
+    kind?: 'self-check' | 'claim-check' | 'expand' | 'followup' | 'tool-router',
   ): string {
     const base = this.cfg.llmModel ?? 'fake';
     return kind ? `${base}:${kind}` : base;
   }
 
-  private buildPrompt(
-    question: string,
-    chunks: { text: string; expandedText?: string; documentTitle: string }[],
-  ): LlmMessage[] {
+  private buildPrompt(question: string, chunks: PromptSource[]): LlmMessage[] {
     const sources = renderSources(chunks);
     const system =
       'Je bent een klantenservice-assistent. Beantwoord de vraag UITSLUITEND ' +
@@ -495,16 +579,7 @@ export class AnswerService {
     ];
   }
 
-  private parseCitations(
-    answer: string,
-    chunks: Array<{
-      chunkId: string;
-      documentId: string;
-      documentTitle: string;
-      sourceId: string;
-      originUrl: string | null;
-    }>,
-  ): Citation[] {
+  private parseCitations(answer: string, chunks: PromptSource[]): Citation[] {
     const indices = new Set<number>();
     for (const m of answer.matchAll(/\[(\d+)\]/g)) {
       const n = Number(m[1]);
@@ -579,6 +654,28 @@ export class AnswerService {
 /** Clamps a number into the closed interval [0, 1]. */
 export function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
+}
+
+/**
+ * Adapts a live tool-call result (`ToolSource`) into the common
+ * `PromptSource` shape so it can be prepended to the KB chunks and flow
+ * through citation-enforcement/self-check/rendering identically to any
+ * other source. `documentId`/`chunkId` use the sentinel `connector:<id>`
+ * form (never confusable with a real KB uuid); `sourceId` is the raw
+ * connectorId (so `Citation.sourceId` lets a caller identify which
+ * connector was used); `originUrl` is null (a live tool result has no
+ * stable public URL).
+ */
+function toPromptSource(source: ToolSource): PromptSource {
+  const sentinelId = `${TOOL_SOURCE_ID_PREFIX}${source.connectorId}`;
+  return {
+    chunkId: sentinelId,
+    documentId: sentinelId,
+    documentTitle: source.connectorName,
+    sourceId: source.connectorId,
+    originUrl: null,
+    text: source.text,
+  };
 }
 
 /**

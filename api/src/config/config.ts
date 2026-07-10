@@ -155,6 +155,16 @@ const schema = z.object({
   // without it — but any code path that actually stores/reads connector
   // credentials requires it to be set, and fails loudly otherwise.
   ENCRYPTION_KEY: z.string().optional(),
+  // Live tool-calling (part 2 of the connectors feature): lets the answer
+  // pipeline route a question to a tenant-configured connector (see
+  // ConnectorToolService) to fetch live data and cite it alongside KB
+  // chunks. On by default; only ever engages when a REAL llm is configured
+  // AND a ConnectorToolService is actually injected (see AnswerService), so
+  // fake-LLM tests remain deterministic/unaffected regardless of this flag.
+  TOOL_CALLING_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
@@ -219,6 +229,7 @@ export interface AppConfig {
   answerCacheTtlMs: number;
   followupSuggestionsEnabled: boolean;
   encryptionKey?: Buffer;
+  toolCallingEnabled: boolean;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -275,5 +286,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     answerCacheTtlMs: d.ANSWER_CACHE_TTL_MS,
     followupSuggestionsEnabled: d.FOLLOWUP_SUGGESTIONS_ENABLED,
     encryptionKey: decodeEncryptionKey(d.ENCRYPTION_KEY),
+    toolCallingEnabled: d.TOOL_CALLING_ENABLED,
   };
 }
