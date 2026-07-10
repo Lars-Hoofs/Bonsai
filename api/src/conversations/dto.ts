@@ -1,6 +1,7 @@
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsEmail,
   IsIn,
   IsInt,
@@ -112,4 +113,9 @@ export class CreateSavedFilterDto {
 
 export class SetWorkflowStatusDto {
   @IsIn(WORKFLOW_STATUSES) status!: WorkflowStatus;
+}
+
+export class SubmitAnsweredSignalDto {
+  // "Did this answer your question?" — true = yes, false = no.
+  @IsBoolean() answered!: boolean;
 }

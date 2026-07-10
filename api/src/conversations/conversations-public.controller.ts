@@ -30,6 +30,7 @@ import {
   PostMessageDto,
   ResumeConversationDto,
   StartConversationDto,
+  SubmitAnsweredSignalDto,
   SubmitCsatDto,
   SubmitMessageFeedbackDto,
   UploadAttachmentDto,
@@ -289,6 +290,33 @@ export class ConversationsPublicController {
       visitorSecret,
       messageId,
       dto.rating,
+    );
+    return { ok: true };
+  }
+
+  // "Did this answer your question?" inline yes/no signal on a bot answer
+  // (#32). A "no" records the question into the unanswered-questions store
+  // for clustering into KB gaps (#41); both yes/no also upsert the existing
+  // per-answer feedback (thumbs up/down).
+  @Post(':conversationId/messages/:messageId/answered')
+  async submitAnsweredSignal(
+    @Req() req: WidgetKeyedRequest,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+    @Body() dto: SubmitAnsweredSignalDto,
+    @Headers('x-bonsai-visitor-secret') visitorSecret: string | undefined,
+  ): Promise<{ ok: true }> {
+    const { schemaName, projectId } = requireWidgetKey(req);
+    if (!visitorSecret) {
+      throw new UnauthorizedException('Missing visitor secret');
+    }
+    await this.conversations.submitAnsweredSignal(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+      messageId,
+      dto.answered,
     );
     return { ok: true };
   }

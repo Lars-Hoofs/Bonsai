@@ -35,6 +35,7 @@ import { PlanLimitsModule } from './plan-limits/plan-limits.module';
 import { TwoFactorModule } from './two-factor/two-factor.module';
 import { ConversationNotesModule } from './conversation-notes/conversation-notes.module';
 import { ModerationModule } from './moderation/moderation.module';
+import { UnansweredQuestionsModule } from './unanswered-questions/unanswered-questions.module';
 
 @Module({
   imports: [
@@ -71,6 +72,7 @@ import { ModerationModule } from './moderation/moderation.module';
     TwoFactorModule,
     ConversationNotesModule,
     ModerationModule,
+    UnansweredQuestionsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],

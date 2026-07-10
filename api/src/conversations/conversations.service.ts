@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { TenantDbService } from '../tenancy/tenant-db.service';
 import { AnswerService } from '../rag/answer.service';
 import type { ConversationTurn } from '../rag/answer.service';
@@ -333,6 +334,23 @@ export class ConversationsService {
       await db.execute(
         sql`UPDATE conversations SET updated_at=now() WHERE id=${conversationId}`,
       );
+      // Unanswered-questions capture (#32): a refused / low-confidence answer
+      // means the KB couldn't answer this question — record it (in the same
+      // transaction as the answer, so it's atomic and can't be lost) so
+      // editors can later cluster these into KB gaps (#41). Keyed by the bot
+      // message_id so a later explicit "no" from the visitor upserts the same
+      // row rather than double-counting.
+      if (answer.refused) {
+        await this.recordUnansweredQuestion(db, {
+          projectId,
+          conversationId,
+          messageId,
+          question: text,
+          language: convo.language,
+          confidence: answer.confidence,
+          reason: 'refused',
+        });
+      }
     });
     this.emit(tenantId, projectId, conversationId, 'bot', answer.answer);
 
@@ -1062,6 +1080,113 @@ export class ConversationsService {
     const messages = await this.fetchMessages(schemaName, conversationId);
     const { subject, text, html } = renderTranscript(messages, convo.startedAt);
     await this.mail.send({ to: email, subject, text, html });
+  }
+
+  /**
+   * Inline "Did this answer your question?" signal (#32). The visitor answers
+   * yes/no on a specific bot answer. This reuses the existing per-answer
+   * feedback store (`message_feedback`, migration 0010) — a "yes" upserts a
+   * thumbs-up, a "no" a thumbs-down — so we don't duplicate the CSAT/feedback
+   * mechanism; on top of that, a "no" additionally records the question that
+   * the bot failed to answer into the unanswered-questions store (#41), keyed
+   * by this bot answer's `message_id`. The question text is the visitor
+   * message immediately preceding this bot answer.
+   *
+   * Ownership is proven exactly like every other visitor mutation (404 unknown
+   * id, 401 wrong/missing secret) and the target must be a bot message in this
+   * conversation. Idempotent: re-answering just overwrites the feedback and
+   * refreshes the unanswered row.
+   */
+  async submitAnsweredSignal(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+    messageId: string,
+    answered: boolean,
+  ): Promise<void> {
+    const convo = await this.requireConversationForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+    );
+    await this.tenantDb.withTenant(schemaName, async (db) => {
+      const botRow = await db.execute(
+        sql`SELECT id, confidence FROM messages
+            WHERE id = ${messageId} AND conversation_id = ${conversationId} AND role = 'bot'`,
+      );
+      if (!botRow.rows[0]) {
+        throw new NotFoundException('Message not found in this conversation');
+      }
+      const confidence = (botRow.rows[0] as { confidence: number | null })
+        .confidence;
+      // Reuse the existing per-answer feedback store rather than a new one.
+      await db.execute(
+        sql`INSERT INTO message_feedback (message_id, rating)
+            VALUES (${messageId}, ${answered ? 'up' : 'down'})
+            ON CONFLICT (message_id) DO UPDATE SET rating = EXCLUDED.rating, created_at = now()`,
+      );
+      if (!answered) {
+        // The visitor question this answer was replying to: the newest visitor
+        // message at or before this bot answer.
+        const q = await db.execute(
+          sql`SELECT content FROM messages
+              WHERE conversation_id = ${conversationId} AND role = 'visitor'
+                AND created_at <= (SELECT created_at FROM messages WHERE id = ${messageId})
+              ORDER BY created_at DESC
+              LIMIT 1`,
+        );
+        const question = (q.rows[0] as { content?: string } | undefined)
+          ?.content;
+        if (question) {
+          await this.recordUnansweredQuestion(db, {
+            projectId,
+            conversationId,
+            messageId,
+            question,
+            language: convo.language,
+            confidence: confidence == null ? null : Number(confidence),
+            reason: 'visitor_no',
+          });
+        }
+      }
+    });
+  }
+
+  /**
+   * Upserts an unanswered-question record keyed by the bot `message_id`. The
+   * automatic 'refused' capture (in `postVisitorMessage`) and a later explicit
+   * 'visitor_no' converge on the same row, so one failed answer is counted
+   * once. A resolved row that comes back (visitor re-reports) is reopened.
+   * Runs on the caller's tenant-scoped `db` handle so it's atomic with the
+   * surrounding write and never opens its own transaction.
+   */
+  private async recordUnansweredQuestion(
+    db: NodePgDatabase,
+    input: {
+      projectId: string;
+      conversationId: string;
+      messageId: string;
+      question: string;
+      language: string | null;
+      confidence: number | null;
+      reason: 'refused' | 'visitor_no';
+    },
+  ): Promise<void> {
+    await db.execute(
+      sql`INSERT INTO unanswered_questions
+            (project_id, conversation_id, message_id, question, language, confidence, reason)
+          VALUES (${input.projectId}, ${input.conversationId}, ${input.messageId},
+                  ${input.question}, ${input.language}, ${input.confidence}, ${input.reason})
+          ON CONFLICT (message_id) DO UPDATE SET
+            question = EXCLUDED.question,
+            language = EXCLUDED.language,
+            confidence = EXCLUDED.confidence,
+            reason = EXCLUDED.reason,
+            resolved = false,
+            created_at = now()`,
+    );
   }
 
   /**
