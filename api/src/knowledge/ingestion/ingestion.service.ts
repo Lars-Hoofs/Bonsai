@@ -259,9 +259,10 @@ export class IngestionService {
   ): Promise<RawDocument[]> {
     const str = (v: unknown, fallback = ''): string =>
       typeof v === 'string' ? v : fallback;
-    // 'upload' arrives with text already extracted by the controller, so it is
-    // treated like a manual document here.
-    if (type === 'manual' || type === 'upload') {
+    // 'upload' arrives with text already extracted by the controller, and
+    // 'article' arrives with its rich-text already rendered to a Markdown
+    // `body` by ArticlesService, so both are treated like a manual document.
+    if (type === 'manual' || type === 'upload' || type === 'article') {
       return [
         {
           title: str(config.title, 'Untitled'),

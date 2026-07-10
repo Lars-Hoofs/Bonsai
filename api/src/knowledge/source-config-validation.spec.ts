@@ -2,6 +2,36 @@ import { BadRequestException } from '@nestjs/common';
 import { validateSourceConfig } from './source-config-validation';
 
 describe('validateSourceConfig', () => {
+  describe('article', () => {
+    it('accepts a valid article config', () => {
+      expect(() =>
+        validateSourceConfig('article', {
+          title: 'FAQ',
+          body: '## Q?\n\nA.',
+          language: 'nl',
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts an article config without optional language', () => {
+      expect(() =>
+        validateSourceConfig('article', { title: 'T', body: 'text' }),
+      ).not.toThrow();
+    });
+
+    it('rejects a missing body', () => {
+      expect(() => validateSourceConfig('article', { title: 'T' })).toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('rejects a missing title', () => {
+      expect(() => validateSourceConfig('article', { body: 'text' })).toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
   describe('manual', () => {
     it('accepts a valid manual config', () => {
       expect(() =>

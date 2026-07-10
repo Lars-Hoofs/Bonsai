@@ -3,6 +3,8 @@ import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 import { TenancyModule } from '../tenancy/tenancy.module';
 import { KbBulkService } from './bulk/kb-bulk.service';
+import { ArticlesController } from './articles.controller';
+import { ArticlesService } from './articles.service';
 import { ChunkingService } from './chunking/chunking.service';
 import { EmbeddingModule } from './embedding/embedding.module';
 import { IngestionService } from './ingestion/ingestion.service';
@@ -16,7 +18,7 @@ import { TranscriptionModule } from './transcription/transcription.module';
 
 @Module({
   imports: [TenancyModule, EmbeddingModule, TranscriptionModule],
-  controllers: [KnowledgeController],
+  controllers: [KnowledgeController, ArticlesController],
   providers: [
     ChunkingService,
     IngestionService,
@@ -34,7 +36,8 @@ import { TranscriptionModule } from './transcription/transcription.module';
         new TesseractOcrProvider(cfg.ocrLanguages),
       inject: [APP_CONFIG],
     },
+    ArticlesService,
   ],
-  exports: [KnowledgeSourcesService, IngestionService],
+  exports: [KnowledgeSourcesService, IngestionService, ArticlesService],
 })
 export class KnowledgeModule {}
