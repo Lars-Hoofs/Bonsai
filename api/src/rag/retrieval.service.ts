@@ -221,13 +221,20 @@ export class RetrievalService {
       const ftsTsQuery = aliasSuffix
         ? sql`(plainto_tsquery(${cfg}::regconfig, ${query}) || plainto_tsquery(${cfg}::regconfig, ${aliasSuffix}))`
         : sql`plainto_tsquery(${cfg}::regconfig, ${query})`;
+      // Per-document enable/disable (#21): chunks whose owning document is
+      // disabled (documents.enabled = false) are excluded from every candidate
+      // list, so a toggled-off document (and all its chunks) never surfaces in
+      // retrieval — without deleting anything. The vec/fts CTEs join documents
+      // and filter there too, so disabled chunks don't consume candidate slots.
       const r = await db.execute(sql`
         WITH q AS (SELECT ${vecLiteral}::shared.vector AS v),
         vec AS (
           SELECT c.id,
                  row_number() OVER (ORDER BY c.embedding <=> (SELECT v FROM q)) AS rnk
           FROM chunks c
+          JOIN documents d ON d.id = c.document_id
           WHERE c.project_id = ${projectId} AND c.embedding IS NOT NULL
+            AND d.enabled
           ORDER BY c.embedding <=> (SELECT v FROM q)
           LIMIT ${candidates}
         ),
@@ -237,8 +244,10 @@ export class RetrievalService {
                    ORDER BY ts_rank(c.tsv, ${ftsTsQuery}) DESC
                  ) AS rnk
           FROM chunks c
+          JOIN documents d ON d.id = c.document_id
           WHERE c.project_id = ${projectId}
             AND c.tsv @@ ${ftsTsQuery}
+            AND d.enabled
           LIMIT ${candidates}
         )
         SELECT c.id AS chunk_id, c.document_id, c.ordinal, c.text,
@@ -251,6 +260,7 @@ export class RetrievalService {
         LEFT JOIN fts ON fts.id = c.id
         JOIN documents d ON d.id = c.document_id
         WHERE c.project_id = ${projectId}
+          AND d.enabled
           AND (vec.id IS NOT NULL OR fts.id IS NOT NULL)
         ORDER BY score DESC
         LIMIT ${candidates}

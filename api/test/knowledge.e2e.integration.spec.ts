@@ -23,8 +23,10 @@ interface DocListItem {
   id: string;
   title: string;
   chunkCount: number;
+  enabled: boolean;
 }
 interface DocBody {
+  enabled: boolean;
   chunks: { ordinal: number; text: string; tokenCount: number }[];
 }
 
@@ -251,5 +253,83 @@ describe('knowledge base e2e', () => {
     expect(row?.documentCount).toBeGreaterThan(0);
     expect(row?.chunkCount).toBeGreaterThan(0);
     expect(row?.failedDocumentCount).toBe(0);
+  });
+
+  it('toggles a document enabled/disabled (#21) without deleting it', async () => {
+    const create = await request(app.getHttpServer())
+      .post(`${base()}/sources`)
+      .set(auth())
+      .send({
+        type: 'manual',
+        name: 'toggle',
+        config: { title: 'Toggle', body: 'een twee drie vier vijf' },
+      })
+      .expect(201);
+    const sourceId = (create.body as SourceBody).id;
+
+    const list = await request(app.getHttpServer())
+      .get(`${base()}/documents?sourceId=${sourceId}`)
+      .set(auth())
+      .expect(200);
+    const doc = (list.body as DocListItem[])[0];
+    // New documents default to enabled.
+    expect(doc.enabled).toBe(true);
+
+    // Disable it.
+    const disabled = await request(app.getHttpServer())
+      .patch(`${base()}/documents/${doc.id}`)
+      .set(auth())
+      .send({ enabled: false })
+      .expect(200);
+    expect((disabled.body as DocBody).enabled).toBe(false);
+
+    // Reflected in list + detail; chunks are preserved (not deleted).
+    const afterList = await request(app.getHttpServer())
+      .get(`${base()}/documents?sourceId=${sourceId}`)
+      .set(auth())
+      .expect(200);
+    const afterDoc = (afterList.body as DocListItem[])[0];
+    expect(afterDoc.enabled).toBe(false);
+    expect(afterDoc.chunkCount).toBeGreaterThan(0);
+
+    // Re-enable.
+    const enabled = await request(app.getHttpServer())
+      .patch(`${base()}/documents/${doc.id}`)
+      .set(auth())
+      .send({ enabled: true })
+      .expect(200);
+    expect((enabled.body as DocBody).enabled).toBe(true);
+  });
+
+  it('rejects a non-boolean enabled value (#21)', async () => {
+    const create = await request(app.getHttpServer())
+      .post(`${base()}/sources`)
+      .set(auth())
+      .send({
+        type: 'manual',
+        name: 'toggle-bad',
+        config: { title: 'ToggleBad', body: 'alpha beta gamma delta' },
+      })
+      .expect(201);
+    const sourceId = (create.body as SourceBody).id;
+    const list = await request(app.getHttpServer())
+      .get(`${base()}/documents?sourceId=${sourceId}`)
+      .set(auth())
+      .expect(200);
+    const doc = (list.body as DocListItem[])[0];
+
+    await request(app.getHttpServer())
+      .patch(`${base()}/documents/${doc.id}`)
+      .set(auth())
+      .send({ enabled: 'nope' })
+      .expect(400);
+  });
+
+  it('returns 404 when toggling an unknown document (#21)', async () => {
+    await request(app.getHttpServer())
+      .patch(`${base()}/documents/00000000-0000-0000-0000-000000000000`)
+      .set(auth())
+      .send({ enabled: false })
+      .expect(404);
   });
 });

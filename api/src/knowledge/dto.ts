@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsObject,
@@ -39,4 +40,10 @@ export class SetSourceScheduleDto {
   @IsInt()
   @Min(MIN_RECRAWL_INTERVAL_MS)
   recrawlIntervalMs!: number | null;
+}
+
+/** Per-document enable/disable (#21): toggles whether a document's chunks are
+ * included in retrieval. Disabled documents are excluded, not deleted. */
+export class SetDocumentEnabledDto {
+  @IsBoolean() enabled!: boolean;
 }

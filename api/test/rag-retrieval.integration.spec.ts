@@ -233,6 +233,76 @@ describe('RAG hybrid retrieval', () => {
     });
   });
 
+  describe('per-document enable/disable (#21)', () => {
+    let toggleProjectId: string;
+    let documentId: string;
+    const UNIQUE_TEXT =
+      'Ons speciale winterassortiment sneeuwkettingen en handschoenen is nu verkrijgbaar in de webshop.';
+    const QUERY = 'winterassortiment sneeuwkettingen handschoenen webshop';
+
+    const setEnabled = async (enabled: boolean): Promise<void> => {
+      await tenantDb.withTenant(schemaName, async (db) => {
+        await db.execute(
+          sql`UPDATE documents SET enabled=${enabled} WHERE id=${documentId}`,
+        );
+      });
+    };
+
+    beforeAll(async () => {
+      toggleProjectId = randomUUID();
+      documentId = await addChunkedDocument(
+        'Winterassortiment',
+        [UNIQUE_TEXT],
+        toggleProjectId,
+      );
+    });
+
+    it('an enabled document is retrievable', async () => {
+      await setEnabled(true);
+      const results = await retrieval.retrieve(
+        schemaName,
+        toggleProjectId,
+        QUERY,
+      );
+      expect(results.map((c) => c.documentTitle)).toContain(
+        'Winterassortiment',
+      );
+    });
+
+    it('a disabled document (and its chunks) is excluded from retrieval', async () => {
+      await setEnabled(false);
+      const results = await retrieval.retrieve(
+        schemaName,
+        toggleProjectId,
+        QUERY,
+      );
+      expect(results).toHaveLength(0);
+    });
+
+    it('re-enabling makes the document retrievable again (no data loss)', async () => {
+      await setEnabled(true);
+      const results = await retrieval.retrieve(
+        schemaName,
+        toggleProjectId,
+        QUERY,
+      );
+      expect(results.map((c) => c.documentTitle)).toContain(
+        'Winterassortiment',
+      );
+    });
+
+    it('multi-query retrieval also excludes disabled documents', async () => {
+      await setEnabled(false);
+      const results = await retrieval.retrieveMulti(
+        schemaName,
+        toggleProjectId,
+        [QUERY, 'sneeuwkettingen'],
+      );
+      expect(results).toHaveLength(0);
+      await setEnabled(true);
+    });
+  });
+
   describe('synonyms-boosted lexical retrieval (#23)', () => {
     let synProjectId: string;
     let synonyms: SynonymsService;

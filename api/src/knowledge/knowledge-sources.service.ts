@@ -330,18 +330,19 @@ export class KnowledgeSourcesService {
       title: string;
       status: string;
       language: string;
+      enabled: boolean;
       chunkCount: number;
     }>
   > {
     return this.tenantDb.withTenant(schemaName, async (db) => {
       const r = sourceId
         ? await db.execute(
-            sql`SELECT d.id, d.source_id, d.title, d.status, d.language,
+            sql`SELECT d.id, d.source_id, d.title, d.status, d.language, d.enabled,
                    (SELECT count(*)::int FROM chunks c WHERE c.document_id=d.id) AS chunk_count
                 FROM documents d WHERE d.project_id=${projectId} AND d.source_id=${sourceId} ORDER BY d.created_at`,
           )
         : await db.execute(
-            sql`SELECT d.id, d.source_id, d.title, d.status, d.language,
+            sql`SELECT d.id, d.source_id, d.title, d.status, d.language, d.enabled,
                    (SELECT count(*)::int FROM chunks c WHERE c.document_id=d.id) AS chunk_count
                 FROM documents d WHERE d.project_id=${projectId} ORDER BY d.created_at`,
           );
@@ -351,6 +352,7 @@ export class KnowledgeSourcesService {
         title: row.title as string,
         status: row.status as string,
         language: row.language as string,
+        enabled: row.enabled as boolean,
         chunkCount: row.chunk_count as number,
       }));
     });
@@ -365,14 +367,21 @@ export class KnowledgeSourcesService {
     title: string;
     status: string;
     language: string;
+    enabled: boolean;
     chunks: Array<{ ordinal: number; text: string; tokenCount: number }>;
   }> {
     const result = await this.tenantDb.withTenant(schemaName, async (db) => {
       const d = await db.execute(
-        sql`SELECT id, title, status, language FROM documents WHERE id=${documentId} AND project_id=${projectId}`,
+        sql`SELECT id, title, status, language, enabled FROM documents WHERE id=${documentId} AND project_id=${projectId}`,
       );
       const doc = d.rows[0] as
-        | { id: string; title: string; status: string; language: string }
+        | {
+            id: string;
+            title: string;
+            status: string;
+            language: string;
+            enabled: boolean;
+          }
         | undefined;
       if (!doc) return null;
       const c = await db.execute(
@@ -387,6 +396,47 @@ export class KnowledgeSourcesService {
     });
     if (!result) throw new NotFoundException('Document not found');
     return result;
+  }
+
+  /**
+   * Toggles a single document on/off for retrieval (#21). A disabled document
+   * (and all its chunks) is excluded from retrieval by RetrievalService's
+   * `documents.enabled` filter, without deleting any rows — re-enabling makes
+   * it retrievable again immediately. Idempotent: setting the same value again
+   * simply returns the (unchanged) document.
+   */
+  async setDocumentEnabled(
+    tenant: { id: string; schemaName: string },
+    projectId: string,
+    documentId: string,
+    enabled: boolean,
+    actorUserId: string,
+  ): Promise<{
+    id: string;
+    title: string;
+    status: string;
+    language: string;
+    enabled: boolean;
+    chunks: Array<{ ordinal: number; text: string; tokenCount: number }>;
+  }> {
+    const updated = await this.tenantDb.withTenant(
+      tenant.schemaName,
+      async (db) => {
+        const r = await db.execute(
+          sql`UPDATE documents SET enabled=${enabled}, updated_at=now()
+              WHERE id=${documentId} AND project_id=${projectId} RETURNING id`,
+        );
+        return r.rows.length > 0;
+      },
+    );
+    if (!updated) throw new NotFoundException('Document not found');
+    await this.audit.record({
+      tenantId: tenant.id,
+      actorUserId,
+      action: enabled ? 'document.enabled' : 'document.disabled',
+      resource: `document:${documentId}`,
+    });
+    return this.getDocument(tenant.schemaName, projectId, documentId);
   }
 
   async remove(

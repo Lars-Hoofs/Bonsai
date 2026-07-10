@@ -8,6 +8,7 @@ import {
   Optional,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Put,
   Query,
@@ -30,6 +31,7 @@ import {
   CreateSourceDto,
   ExportKnowledgeDto,
   ImportKnowledgeDto,
+  SetDocumentEnabledDto,
   SetSourceScheduleDto,
 } from './dto';
 import { extractUploadText } from './ingestion/extract-text';
@@ -307,5 +309,25 @@ export class KnowledgeController {
     @Param('documentId', ParseUUIDPipe) documentId: string,
   ) {
     return this.knowledge.getDocument(tenant.schemaName, projectId, documentId);
+  }
+
+  // Per-document enable/disable (#21): toggle whether this document's chunks
+  // are included in retrieval. Disabled documents are excluded, not deleted.
+  @Patch('documents/:documentId')
+  @RequireRole('editor')
+  setDocumentEnabled(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @Body() dto: SetDocumentEnabledDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.knowledge.setDocumentEnabled(
+      tenant,
+      projectId,
+      documentId,
+      dto.enabled,
+      user.id,
+    );
   }
 }
