@@ -149,7 +149,33 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Symmetric key for encrypting tenant-owned API connector credentials at
+  // rest (AES-256-GCM, see EncryptionService). Accepts base64 or hex; must
+  // decode to exactly 32 bytes. Optional so most of the app/tests can run
+  // without it — but any code path that actually stores/reads connector
+  // credentials requires it to be set, and fails loudly otherwise.
+  ENCRYPTION_KEY: z.string().optional(),
 });
+
+function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
+  if (!raw) return undefined;
+  // A 32-byte key is 64 hex chars but 44 base64 chars (with padding) — the
+  // lengths never overlap, so we can disambiguate by input length rather
+  // than by guessing from the alphabet (a hex string is also a valid,
+  // differently-valued base64 string, so alphabet-sniffing is ambiguous).
+  const isHexAlphabet = /^[0-9a-fA-F]+$/.test(raw);
+  const decoded =
+    isHexAlphabet && raw.length === 64
+      ? Buffer.from(raw, 'hex')
+      : Buffer.from(raw, 'base64');
+
+  if (decoded.length !== 32) {
+    throw new Error(
+      `Invalid configuration: ENCRYPTION_KEY must decode (base64 or hex) to exactly 32 bytes, got ${decoded.length}`,
+    );
+  }
+  return decoded;
+}
 
 export interface AppConfig {
   databaseUrl: string;
@@ -192,6 +218,7 @@ export interface AppConfig {
   answerCacheEnabled: boolean;
   answerCacheTtlMs: number;
   followupSuggestionsEnabled: boolean;
+  encryptionKey?: Buffer;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -247,5 +274,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     answerCacheEnabled: d.ANSWER_CACHE_ENABLED,
     answerCacheTtlMs: d.ANSWER_CACHE_TTL_MS,
     followupSuggestionsEnabled: d.FOLLOWUP_SUGGESTIONS_ENABLED,
+    encryptionKey: decodeEncryptionKey(d.ENCRYPTION_KEY),
   };
 }

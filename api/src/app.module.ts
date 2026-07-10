@@ -21,6 +21,8 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { UsageModule } from './usage/usage.module';
 import { CrawlModule } from './crawl/crawl.module';
 import { StorageModule } from './storage/storage.module';
+import { CommonModule } from './common/common.module';
+import { ConnectorsModule } from './connectors/connectors.module';
 
 @Module({
   imports: [
@@ -43,6 +45,8 @@ import { StorageModule } from './storage/storage.module';
     UsageModule,
     CrawlModule,
     StorageModule,
+    CommonModule,
+    ConnectorsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],

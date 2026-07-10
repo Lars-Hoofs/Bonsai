@@ -58,4 +58,30 @@ describe('loadConfig', () => {
     });
     expect(cfg.followupSuggestionsEnabled).toBe(false);
   });
+
+  it('leaves encryptionKey undefined when ENCRYPTION_KEY is unset', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.encryptionKey).toBeUndefined();
+  });
+
+  it('decodes a base64-encoded 32-byte ENCRYPTION_KEY', () => {
+    const key = Buffer.alloc(32, 7).toString('base64');
+    const cfg = loadConfig({ ...valid, ENCRYPTION_KEY: key });
+    expect(cfg.encryptionKey).toHaveLength(32);
+    expect(cfg.encryptionKey?.equals(Buffer.alloc(32, 7))).toBe(true);
+  });
+
+  it('decodes a hex-encoded 32-byte ENCRYPTION_KEY', () => {
+    const key = Buffer.alloc(32, 9).toString('hex');
+    const cfg = loadConfig({ ...valid, ENCRYPTION_KEY: key });
+    expect(cfg.encryptionKey).toHaveLength(32);
+    expect(cfg.encryptionKey?.equals(Buffer.alloc(32, 9))).toBe(true);
+  });
+
+  it('throws a clear error when ENCRYPTION_KEY decodes to the wrong length', () => {
+    const shortKey = Buffer.alloc(16, 1).toString('base64');
+    expect(() => loadConfig({ ...valid, ENCRYPTION_KEY: shortKey })).toThrow(
+      /ENCRYPTION_KEY must decode.*32 bytes/,
+    );
+  });
 });

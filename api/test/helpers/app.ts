@@ -39,6 +39,11 @@ export async function buildTestApp(
     retrievalWindow: 1,
     billingEnabled: true,
     widgetCorsOrigins: [],
+    // A valid 32-byte key so the EncryptionService encrypt/decrypt path is
+    // actually exercised in e2e tests (connectors credentials, etc.),
+    // rather than every test hitting the "ENCRYPTION_KEY not configured"
+    // error path.
+    encryptionKey: Buffer.alloc(32, 42),
     ...cfgOverrides,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
