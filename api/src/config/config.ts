@@ -209,6 +209,19 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  // Scheduled report generation (#45). An in-process interval runner (no Redis
+  // dependency — works in the base self-hosted deploy) periodically scans every
+  // active tenant's report_schedules for due entries, generates the report and
+  // delivers it via MailModule / StorageModule. On by default; the scan is
+  // cheap when no schedules exist. Disable to opt a node out of running the
+  // scheduler (e.g. a read-only replica or a test process).
+  REPORTS_SCHEDULER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // How often the runner ticks. Default 1h: cadences are day/week/month
+  // granularity, so an hourly scan is plenty timely while staying cheap.
+  REPORTS_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
 });
 
 function decodeEncryptionKey(raw: string | undefined): Buffer | undefined {
@@ -286,6 +299,8 @@ export interface AppConfig {
   smtpPass?: string;
   smtpFrom?: string;
   smtpSecure: boolean;
+  reportsSchedulerEnabled: boolean;
+  reportsIntervalMs: number;
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -355,5 +370,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     smtpPass: d.SMTP_PASS,
     smtpFrom: d.SMTP_FROM,
     smtpSecure: d.SMTP_SECURE,
+    reportsSchedulerEnabled: d.REPORTS_SCHEDULER_ENABLED,
+    reportsIntervalMs: d.REPORTS_INTERVAL_MS,
   };
 }

@@ -53,6 +53,10 @@ export async function buildTestApp(
     // SMTP left unset: MailService stays a no-op so tests never send real mail.
     smtpPort: 587,
     smtpSecure: false,
+    // Scheduler off by default in tests so no background interval fires during
+    // e2e specs; specs that exercise the runner drive it explicitly.
+    reportsSchedulerEnabled: false,
+    reportsIntervalMs: 3_600_000,
     ...cfgOverrides,
   };
   const mod = await Test.createTestingModule({ imports: [AppModule] })
