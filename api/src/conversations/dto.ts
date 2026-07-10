@@ -8,6 +8,8 @@ import {
   Max,
   Min,
 } from 'class-validator';
+import { WORKFLOW_STATUSES } from './sla';
+import type { WorkflowStatus } from './sla';
 
 export class StartConversationDto {
   @IsOptional() @IsString() @Length(1, 200) visitorId?: string;
@@ -41,4 +43,8 @@ export class SubmitCsatDto {
 
 export class SubmitMessageFeedbackDto {
   @IsIn(['up', 'down']) rating!: 'up' | 'down';
+}
+
+export class SetWorkflowStatusDto {
+  @IsIn(WORKFLOW_STATUSES) status!: WorkflowStatus;
 }

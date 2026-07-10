@@ -18,7 +18,14 @@ import type {
   ConversationSummary,
 } from './conversations.service';
 import { ConversationsService } from './conversations.service';
-import { AgentMessageDto, AssignConversationDto, SetPresenceDto } from './dto';
+import { WORKFLOW_STATUSES } from './sla';
+import type { WorkflowStatus } from './sla';
+import {
+  AgentMessageDto,
+  AssignConversationDto,
+  SetPresenceDto,
+  SetWorkflowStatusDto,
+} from './dto';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -43,6 +50,23 @@ function resolveAssigneeFilter(
 }
 
 /**
+ * Resolves the optional `?workflowStatus=` inbox filter (#37) to a concrete
+ * lifecycle value, or undefined when absent (no filter). Rejects anything
+ * outside the open/pending/resolved lifecycle.
+ */
+function resolveWorkflowStatusFilter(
+  raw: string | undefined,
+): WorkflowStatus | undefined {
+  if (raw === undefined) return undefined;
+  if ((WORKFLOW_STATUSES as readonly string[]).includes(raw)) {
+    return raw as WorkflowStatus;
+  }
+  throw new BadRequestException(
+    `workflowStatus must be one of: ${WORKFLOW_STATUSES.join(', ')}`,
+  );
+}
+
+/**
  * Agent/back-office side of conversations: OIDC + tenant-membership gated
  * (global AuthGuard + MembershipGuard). Visitor-facing actions (start a
  * conversation, post a visitor message, escalate, reload history as the
@@ -62,13 +86,16 @@ export class ConversationsController {
     @CurrentUser() user: AuthUser,
     @Query('status') status = 'handover',
     @Query('assignee') assignee?: string,
+    @Query('workflowStatus') workflowStatus?: string,
   ): Promise<ConversationSummary[]> {
     const assigneeFilter = resolveAssigneeFilter(assignee, user.id);
+    const workflowFilter = resolveWorkflowStatusFilter(workflowStatus);
     return this.conversations.listInbox(
       tenant.schemaName,
       projectId,
       status,
       assigneeFilter,
+      workflowFilter,
     );
   }
 
@@ -140,6 +167,29 @@ export class ConversationsController {
       projectId,
       conversationId,
       dto.agentUserId ?? user.id,
+      user.id,
+    );
+  }
+
+  /**
+   * Transition the agent-facing workflow status (open/pending/resolved, #37).
+   * Resolving stamps the resolution SLA milestone; reopening clears it.
+   */
+  @Put(':conversationId/workflow-status')
+  @RequireRole('agent')
+  async setWorkflowStatus(
+    @Tenant() tenant: TenantRef,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Body() dto: SetWorkflowStatusDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<ConversationSummary> {
+    return this.conversations.setWorkflowStatus(
+      tenant.id,
+      tenant.schemaName,
+      projectId,
+      conversationId,
+      dto.status,
       user.id,
     );
   }
