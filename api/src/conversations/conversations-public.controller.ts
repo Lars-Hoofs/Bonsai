@@ -97,12 +97,12 @@ export class ConversationsPublicController {
     @Param('conversationId', ParseUUIDPipe) conversationId: string,
     @Body() dto: EscalateDto,
     @Headers('x-bonsai-visitor-secret') visitorSecret: string | undefined,
-  ): Promise<{ ok: true }> {
+  ): Promise<{ ok: true; afterHours: boolean }> {
     const { tenantId, schemaName, projectId } = requireWidgetKey(req);
     if (!visitorSecret) {
       throw new UnauthorizedException('Missing visitor secret');
     }
-    await this.conversations.escalate(
+    const { afterHours } = await this.conversations.escalate(
       tenantId,
       schemaName,
       projectId,
@@ -110,7 +110,7 @@ export class ConversationsPublicController {
       dto.reason ?? 'visitor_request',
       visitorSecret,
     );
-    return { ok: true };
+    return { ok: true, afterHours };
   }
 
   @Get(':conversationId')

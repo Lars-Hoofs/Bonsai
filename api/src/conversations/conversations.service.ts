@@ -12,6 +12,39 @@ import { WebhooksService } from '../webhooks/webhooks.service';
 import { UsageService } from '../usage/usage.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
+import { isOpen } from './business-hours';
+import type { BusinessHours } from './business-hours';
+
+const DEFAULT_HANDOVER_MESSAGE = 'Gesprek doorgezet naar een medewerker.';
+const DEFAULT_AFTER_HOURS_MESSAGE =
+  'Onze medewerkers zijn nu niet bereikbaar. Laat je e-mailadres achter, dan nemen we zo snel mogelijk contact met je op.';
+
+/**
+ * Narrows the free-form `projects.settings` jsonb blob down to the two A1
+ * fields this service cares about, tolerating any garbage/missing shape
+ * (settings is user/agent-editable jsonb, never trust its structure).
+ */
+function readBusinessHoursSettings(settings: Record<string, unknown>): {
+  businessHours?: BusinessHours;
+  afterHoursMessage?: string;
+} {
+  const rawHours = settings.businessHours;
+  let businessHours: BusinessHours | undefined;
+  if (
+    rawHours &&
+    typeof rawHours === 'object' &&
+    typeof (rawHours as { timezone?: unknown }).timezone === 'string' &&
+    Array.isArray((rawHours as { intervals?: unknown }).intervals)
+  ) {
+    businessHours = rawHours as BusinessHours;
+  }
+  const rawMessage = settings.afterHoursMessage;
+  const afterHoursMessage =
+    typeof rawMessage === 'string' && rawMessage.length > 0
+      ? rawMessage
+      : undefined;
+  return { businessHours, afterHoursMessage };
+}
 
 export interface ConversationSummary {
   id: string;
@@ -180,43 +213,75 @@ export class ConversationsService {
     conversationId: string,
     reason: string,
     visitorSecret: string,
-  ): Promise<void> {
+  ): Promise<{ afterHours: boolean }> {
     const convo = await this.requireConversationForVisitor(
       schemaName,
       projectId,
       conversationId,
       visitorSecret,
     );
-    if (convo.status === 'handover') return;
+    // Idempotency: a conversation already in handover is left untouched, but
+    // still reports whether "now" is after-hours so a caller polling this
+    // response gets a consistent answer either way.
+    if (convo.status === 'handover') {
+      const settings = await this.loadProjectSettings(schemaName, projectId);
+      const { businessHours } = readBusinessHoursSettings(settings);
+      return { afterHours: !isOpen(businessHours, new Date()) };
+    }
+
+    const settings = await this.loadProjectSettings(schemaName, projectId);
+    const { businessHours, afterHoursMessage } =
+      readBusinessHoursSettings(settings);
+    const afterHours = !isOpen(businessHours, new Date());
+    const botMessage = afterHours
+      ? (afterHoursMessage ?? DEFAULT_AFTER_HOURS_MESSAGE)
+      : DEFAULT_HANDOVER_MESSAGE;
+    // The handovers row still always gets inserted (so it lands in the agent
+    // inbox to be handled later, regardless of hours) — only the posted bot
+    // message and the reported `afterHours` flag change. `afterHours` is
+    // recorded on the existing `reason` column (no schema change) so it's
+    // visible to anyone inspecting the handover record.
+    const storedReason = afterHours ? `${reason} (after-hours)` : reason;
+
     await this.tenantDb.withTenant(schemaName, async (db) => {
       await db.execute(
         sql`UPDATE conversations SET status='handover', updated_at=now() WHERE id=${conversationId}`,
       );
       await db.execute(
-        sql`INSERT INTO handovers (conversation_id, reason) VALUES (${conversationId}, ${reason})`,
+        sql`INSERT INTO handovers (conversation_id, reason) VALUES (${conversationId}, ${storedReason})`,
       );
       await db.execute(
         sql`INSERT INTO messages (conversation_id, role, content)
-            VALUES (${conversationId}, 'system', 'Gesprek doorgezet naar een medewerker.')`,
+            VALUES (${conversationId}, 'system', ${botMessage})`,
       );
     });
     this.metrics.escalationsTotal.inc();
-    this.emit(
-      tenantId,
-      projectId,
-      conversationId,
-      'system',
-      'Gesprek doorgezet naar een medewerker.',
-    );
+    this.emit(tenantId, projectId, conversationId, 'system', botMessage);
     await this.webhooks.dispatch(
       schemaName,
       projectId,
       'conversation.escalated',
       {
         conversationId,
-        reason,
+        reason: storedReason,
+        afterHours,
       },
     );
+    return { afterHours };
+  }
+
+  private async loadProjectSettings(
+    schemaName: string,
+    projectId: string,
+  ): Promise<Record<string, unknown>> {
+    return this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT settings FROM projects WHERE id = ${projectId}`,
+      );
+      const row = r.rows[0] as
+        { settings?: Record<string, unknown> } | undefined;
+      return row?.settings ?? {};
+    });
   }
 
   async listInbox(

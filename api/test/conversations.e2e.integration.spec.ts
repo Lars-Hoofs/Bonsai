@@ -26,6 +26,10 @@ interface StartBody {
   id: string;
   visitorSecret: string;
 }
+interface EscalateBody {
+  ok: true;
+  afterHours: boolean;
+}
 
 describe('conversations + handover e2e', () => {
   let container: StartedPostgreSqlContainer;
@@ -145,13 +149,17 @@ describe('conversations + handover e2e', () => {
     expect(unknownBody.reply?.refused).toBe(true);
     expect(unknownBody.reply?.escalationSuggested).toBe(true);
 
-    // Escalate to a human, as the visitor.
-    await request(app.getHttpServer())
+    // Escalate to a human, as the visitor. No businessHours configured on
+    // this project, so escalation must behave exactly as before A1:
+    // afterHours=false, and (asserted below via the system message in the
+    // agent view) the live-agent handover message is posted.
+    const escalated = await request(app.getHttpServer())
       .post(`${widgetBase}/${conversationId}/escalate`)
       .set('x-bonsai-key', widgetKey)
       .set('x-bonsai-visitor-secret', visitorSecret)
       .send({ reason: 'frustration' })
       .expect(201);
+    expect((escalated.body as EscalateBody).afterHours).toBe(false);
 
     // Conversation now shows up in the agent inbox.
     const inbox = await request(app.getHttpServer())
@@ -192,6 +200,15 @@ describe('conversations + handover e2e', () => {
     expect(v.conversation.status).toBe('bot');
     expect(v.messages.some((m) => m.role === 'agent')).toBe(true);
     expect(v.messages.some((m) => m.role === 'system')).toBe(true);
+    // In-hours (no schedule configured) escalation posts the live-agent
+    // message, not the after-hours contact-form message.
+    expect(
+      v.messages.some(
+        (m) =>
+          m.role === 'system' &&
+          m.content === 'Gesprek doorgezet naar een medewerker.',
+      ),
+    ).toBe(true);
 
     // Visitor can also reload their own history via the public endpoint, and
     // it must not include a visitorSecret field (only `start` returns one).
@@ -205,5 +222,111 @@ describe('conversations + handover e2e', () => {
     };
     expect(vv.conversation.status).toBe('bot');
     expect(vv.conversation.visitorSecret).toBeUndefined();
+  });
+
+  it('escalates as after-hours when the project has a businessHours schedule that is always closed', async () => {
+    // Separate project so this schedule doesn't affect the lifecycle test
+    // above (which relies on no businessHours being configured -> afterHours
+    // false, in-hours message).
+    const p = await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/projects`)
+      .set(auth())
+      .send({ name: 'AfterHoursBot' })
+      .expect(201);
+    const ahProjectId = (p.body as IdBody).id;
+
+    const key = await request(app.getHttpServer())
+      .post(`/v1/tenants/${tenantId}/api-keys`)
+      .set(auth())
+      .send({
+        name: 'widget-ah',
+        kind: 'public_widget',
+        projectId: ahProjectId,
+      })
+      .expect(201);
+    const ahWidgetKey = (key.body as { key: string }).key;
+
+    // Zero-width interval (open === close) for every ISO weekday (1-7) is
+    // deterministically "always closed" regardless of the real wall-clock
+    // time the test suite happens to run at — see business-hours.ts's
+    // half-open [open, close) semantics.
+    const tenantRow = await pool.query<{ schema_name: string }>(
+      'SELECT schema_name FROM tenants WHERE id = $1',
+      [tenantId],
+    );
+    const tenantSchema = tenantRow.rows[0].schema_name;
+    const alwaysClosedSchedule = {
+      timezone: 'Europe/Amsterdam',
+      intervals: [1, 2, 3, 4, 5, 6, 7].map((day) => ({
+        day,
+        open: '00:00',
+        close: '00:00',
+      })),
+    };
+    await pool.query(
+      `UPDATE "${tenantSchema}".projects
+         SET settings = jsonb_set(settings, '{businessHours}', $1::jsonb)
+       WHERE id = $2`,
+      [JSON.stringify(alwaysClosedSchedule), ahProjectId],
+    );
+
+    const started = await request(app.getHttpServer())
+      .post(widgetBase)
+      .set('x-bonsai-key', ahWidgetKey)
+      .send({ language: 'nl' })
+      .expect(201);
+    const { id: conversationId, visitorSecret } = started.body as StartBody;
+
+    const escalated = await request(app.getHttpServer())
+      .post(`${widgetBase}/${conversationId}/escalate`)
+      .set('x-bonsai-key', ahWidgetKey)
+      .set('x-bonsai-visitor-secret', visitorSecret)
+      .send({ reason: 'visitor_request' })
+      .expect(201);
+    expect((escalated.body as EscalateBody).afterHours).toBe(true);
+
+    // The conversation still lands in handover (agent inbox), unchanged.
+    const inbox = await request(app.getHttpServer())
+      .get(
+        `/v1/tenants/${tenantId}/projects/${ahProjectId}/conversations?status=handover`,
+      )
+      .set(auth())
+      .expect(200);
+    expect((inbox.body as IdBody[]).map((c) => c.id)).toContain(conversationId);
+
+    // The posted bot message is the after-hours contact-form message, not
+    // the in-hours "connecting you to an agent" message.
+    const view = await request(app.getHttpServer())
+      .get(
+        `/v1/tenants/${tenantId}/projects/${ahProjectId}/conversations/${conversationId}`,
+      )
+      .set(auth())
+      .expect(200);
+    const v = view.body as ConvoView;
+    expect(
+      v.messages.some(
+        (m) =>
+          m.role === 'system' &&
+          m.content ===
+            'Onze medewerkers zijn nu niet bereikbaar. Laat je e-mailadres achter, dan nemen we zo snel mogelijk contact met je op.',
+      ),
+    ).toBe(true);
+    expect(
+      v.messages.some(
+        (m) =>
+          m.role === 'system' &&
+          m.content === 'Gesprek doorgezet naar een medewerker.',
+      ),
+    ).toBe(false);
+
+    // Re-escalating an already-in-handover conversation is idempotent but
+    // still reports afterHours based on the current schedule/time.
+    const reEscalated = await request(app.getHttpServer())
+      .post(`${widgetBase}/${conversationId}/escalate`)
+      .set('x-bonsai-key', ahWidgetKey)
+      .set('x-bonsai-visitor-secret', visitorSecret)
+      .send({ reason: 'again' })
+      .expect(201);
+    expect((reEscalated.body as EscalateBody).afterHours).toBe(true);
   });
 });
