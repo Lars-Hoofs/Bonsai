@@ -2,9 +2,12 @@ import {
   extractTitle,
   extractUploadText,
   htmlToText,
+  isImageUpload,
+  isPdfUpload,
   MAX_EXTRACTED_TEXT_LENGTH,
   truncateExtractedText,
 } from './extract-text';
+import type { OcrProvider } from './ocr-provider';
 
 describe('htmlToText', () => {
   it('strips tags, scripts and styles and keeps readable text', () => {
@@ -61,6 +64,78 @@ describe('extractUploadText', () => {
       Buffer.from(huge),
     );
     expect(out.length).toBe(MAX_EXTRACTED_TEXT_LENGTH);
+  });
+});
+
+describe('extractUploadText OCR fallback', () => {
+  const fakeOcr = (
+    text: string,
+  ): { provider: OcrProvider; recognize: jest.Mock } => {
+    const recognize = jest.fn().mockResolvedValue(text);
+    return { provider: { recognize }, recognize };
+  };
+
+  it('falls back to OCR for an image whose normal extraction is empty', async () => {
+    const { provider, recognize } = fakeOcr('Gescande tekst');
+    const out = await extractUploadText(
+      'scan.png',
+      'image/png',
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      { ocrEnabled: true, ocrProvider: provider },
+    );
+    expect(out).toBe('Gescande tekst');
+    expect(recognize).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not run OCR when OCR_ENABLED is false', async () => {
+    const { provider, recognize } = fakeOcr('Gescande tekst');
+    const out = await extractUploadText(
+      'scan.png',
+      'image/png',
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      { ocrEnabled: false, ocrProvider: provider },
+    );
+    expect(out).toBe('');
+    expect(recognize).not.toHaveBeenCalled();
+  });
+
+  it('does not run OCR when the image already yields real text (n/a for images, but never triggers on non-empty text)', async () => {
+    // Images have no "normal extraction" text of their own (always empty),
+    // so this documents the general short-circuit via a PDF with real text.
+    const { provider, recognize } = fakeOcr('should not be used');
+    const out = await extractUploadText(
+      'doc.txt',
+      'text/plain',
+      Buffer.from('Plenty of real extracted text right here.'),
+      { ocrEnabled: true, ocrProvider: provider },
+    );
+    expect(out).toBe('Plenty of real extracted text right here.');
+    expect(recognize).not.toHaveBeenCalled();
+  });
+
+  it('keeps the (empty) extracted text and does not crash when OCR fails', async () => {
+    const recognize = jest.fn().mockRejectedValue(new Error('engine crashed'));
+    const provider: OcrProvider = { recognize };
+    const out = await extractUploadText(
+      'scan.png',
+      'image/png',
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      { ocrEnabled: true, ocrProvider: provider },
+    );
+    expect(out).toBe('');
+  });
+
+  it('recognizes image mimetypes/extensions', () => {
+    expect(isImageUpload('image/png', 'a.png')).toBe(true);
+    expect(isImageUpload('image/jpeg', 'a.jpg')).toBe(true);
+    expect(isImageUpload('application/octet-stream', 'a.jpeg')).toBe(true);
+    expect(isImageUpload('text/plain', 'a.txt')).toBe(false);
+  });
+
+  it('recognizes pdf mimetypes/extensions', () => {
+    expect(isPdfUpload('application/pdf', 'a.pdf')).toBe(true);
+    expect(isPdfUpload('application/octet-stream', 'a.pdf')).toBe(true);
+    expect(isPdfUpload('text/plain', 'a.txt')).toBe(false);
   });
 });
 
