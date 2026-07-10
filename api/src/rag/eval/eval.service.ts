@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../../tenancy/tenant-db.service';
 import { AnswerService } from '../answer.service';
+import type { AnswerOverrides } from '../answer.service';
 
 export interface EvalCase {
   id: string;
@@ -149,44 +150,7 @@ export class EvalService {
    */
   async run(schemaName: string, projectId: string): Promise<EvalRunSummary> {
     const cases = await this.list(schemaName, projectId);
-
-    const results: EvalCaseResult[] = [];
-    for (const c of cases) {
-      const answer = await this.answerService.answer(
-        schemaName,
-        projectId,
-        c.question,
-      );
-      const refusalCorrect = answer.refused === c.expectRefusal;
-
-      let citationOk = true;
-      let substringOk = true;
-      if (!c.expectRefusal) {
-        citationOk =
-          c.expectedSourceIds.length === 0
-            ? true
-            : c.expectedSourceIds.every((id) =>
-                answer.citations.some((cit) => cit.sourceId === id),
-              );
-        substringOk =
-          c.expectedSubstrings.length === 0
-            ? true
-            : c.expectedSubstrings.every((s) =>
-                answer.answer.toLowerCase().includes(s.toLowerCase()),
-              );
-      }
-
-      const pass = refusalCorrect && citationOk && substringOk;
-      results.push({
-        caseId: c.id,
-        question: c.question,
-        pass,
-        refusalCorrect,
-        citationOk,
-        substringOk,
-        refused: answer.refused,
-      });
-    }
+    const results = await this.scoreCases(schemaName, projectId, cases);
 
     const total = results.length;
     const passed = results.filter((r) => r.pass).length;
@@ -205,5 +169,70 @@ export class EvalService {
     });
 
     return { runId, total, passed, results };
+  }
+
+  /**
+   * Scores a batch of eval cases through the answer pipeline, optionally under
+   * a set of `AnswerOverrides` (a prompt template and/or retrieval threshold —
+   * feature #30's A/B experiment variants). This is the shared scoring core
+   * extracted from `run`: `run` calls it with no overrides (unchanged
+   * behavior), and the experiment runner calls it once per variant. It only
+   * scores — it does NOT persist an `eval_runs` row.
+   */
+  async scoreCases(
+    schemaName: string,
+    projectId: string,
+    cases: EvalCase[],
+    overrides?: AnswerOverrides,
+  ): Promise<EvalCaseResult[]> {
+    const results: EvalCaseResult[] = [];
+    for (const c of cases) {
+      results.push(await this.scoreCase(schemaName, projectId, c, overrides));
+    }
+    return results;
+  }
+
+  /** Scores a single eval case (see `scoreCases`). */
+  async scoreCase(
+    schemaName: string,
+    projectId: string,
+    c: EvalCase,
+    overrides?: AnswerOverrides,
+  ): Promise<EvalCaseResult> {
+    const answer = await this.answerService.answer(
+      schemaName,
+      projectId,
+      c.question,
+      overrides,
+    );
+    const refusalCorrect = answer.refused === c.expectRefusal;
+
+    let citationOk = true;
+    let substringOk = true;
+    if (!c.expectRefusal) {
+      citationOk =
+        c.expectedSourceIds.length === 0
+          ? true
+          : c.expectedSourceIds.every((id) =>
+              answer.citations.some((cit) => cit.sourceId === id),
+            );
+      substringOk =
+        c.expectedSubstrings.length === 0
+          ? true
+          : c.expectedSubstrings.every((s) =>
+              answer.answer.toLowerCase().includes(s.toLowerCase()),
+            );
+    }
+
+    const pass = refusalCorrect && citationOk && substringOk;
+    return {
+      caseId: c.id,
+      question: c.question,
+      pass,
+      refusalCorrect,
+      citationOk,
+      substringOk,
+      refused: answer.refused,
+    };
   }
 }
