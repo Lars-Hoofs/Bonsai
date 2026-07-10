@@ -14,12 +14,14 @@ import { UsageService } from '../usage/usage.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { AuditService } from '../audit/audit.service';
 import { PresenceService } from '../presence/presence.service';
+import { MailService } from '../mail/mail.service';
 import { APP_CONFIG } from '../config/config';
 import type { AppConfig } from '../config/config';
 import { CHAT_MESSAGE_EVENT } from './chat.gateway';
 import { isOpen } from './business-hours';
 import type { BusinessHours } from './business-hours';
 import { isFrustrated } from './frustration';
+import { renderTranscript } from './transcript';
 
 const DEFAULT_HANDOVER_MESSAGE = 'Gesprek doorgezet naar een medewerker.';
 const DEFAULT_AFTER_HOURS_MESSAGE =
@@ -106,6 +108,7 @@ export class ConversationsService {
     private readonly metrics: MetricsService,
     private readonly presence: PresenceService,
     private readonly audit: AuditService,
+    private readonly mail: MailService,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
@@ -710,6 +713,36 @@ export class ConversationsService {
             ON CONFLICT (message_id) DO UPDATE SET rating = EXCLUDED.rating, created_at = now()`,
       );
     });
+  }
+
+  /**
+   * "Email me this transcript" (#15): a visitor requests the full
+   * conversation transcript be sent to an email address they supply.
+   * Ownership is proven the same way as every other visitor-facing action —
+   * id+project lookup then constant-time secret comparison via
+   * `requireConversationForVisitor` (404 unknown id, 401 wrong/missing secret,
+   * and in both cases no mail is sent). The transcript is rendered to text +
+   * minimal HTML and sent via the self-hosted-SMTP `MailService` (a no-op
+   * that only logs when SMTP is unconfigured, so dev/test never send real
+   * mail). The recipient is the visitor-supplied address, NOT any stored
+   * value — the caller-supplied email is validated at the DTO boundary.
+   */
+  async emailTranscript(
+    schemaName: string,
+    projectId: string,
+    conversationId: string,
+    visitorSecret: string,
+    email: string,
+  ): Promise<void> {
+    const convo = await this.requireConversationForVisitor(
+      schemaName,
+      projectId,
+      conversationId,
+      visitorSecret,
+    );
+    const messages = await this.fetchMessages(schemaName, conversationId);
+    const { subject, text, html } = renderTranscript(messages, convo.startedAt);
+    await this.mail.send({ to: email, subject, text, html });
   }
 
   private mapConversation(row: Record<string, unknown>): ConversationSummary {

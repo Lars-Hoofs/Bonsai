@@ -5,6 +5,7 @@ import { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { startPg } from './helpers/pg';
 import { buildTestApp } from './helpers/app';
 import { TestIdp } from './helpers/oidc';
+import { MailService } from '../src/mail/mail.service';
 
 interface IdBody {
   id: string;
@@ -458,6 +459,125 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
         .set('x-bonsai-visitor-secret', visitorSecret)
         .send({ rating: 'sideways' })
         .expect(400);
+    });
+  });
+
+  describe('email me this transcript (#15)', () => {
+    async function startWithMessage(): Promise<{
+      conversationId: string;
+      visitorSecret: string;
+    }> {
+      const started = await request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', widgetKey)
+        .send({ language: 'nl' })
+        .expect(201);
+      const { id: conversationId, visitorSecret } = started.body as StartBody;
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/messages`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ content: 'hallo, wat zijn jullie openingstijden?' })
+        .expect(201);
+      return { conversationId, visitorSecret };
+    }
+
+    it('emails the transcript to a visitor-supplied address via MailService', async () => {
+      const { conversationId, visitorSecret } = await startWithMessage();
+      const sendSpy = jest
+        .spyOn(app.get(MailService), 'send')
+        .mockResolvedValue(undefined);
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/email-transcript`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ email: 'visitor@example.eu' })
+        .expect(201);
+
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      const arg = sendSpy.mock.calls[0][0];
+      expect(arg.to).toBe('visitor@example.eu');
+      expect(arg.subject).toContain('transcript');
+      expect(arg.text).toContain('hallo, wat zijn jullie openingstijden?');
+      expect(arg.html).toContain('hallo, wat zijn jullie openingstijden?');
+      sendSpy.mockRestore();
+    });
+
+    it('rejects an invalid email address (400) and never sends', async () => {
+      const { conversationId, visitorSecret } = await startWithMessage();
+      const sendSpy = jest.spyOn(app.get(MailService), 'send');
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/email-transcript`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', visitorSecret)
+        .send({ email: 'not-an-email' })
+        .expect(400);
+
+      expect(sendSpy).not.toHaveBeenCalled();
+      sendSpy.mockRestore();
+    });
+
+    it('rejects a missing/wrong visitor secret (401) and never sends', async () => {
+      const { conversationId } = await startWithMessage();
+      const sendSpy = jest.spyOn(app.get(MailService), 'send');
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/email-transcript`)
+        .set('x-bonsai-key', widgetKey)
+        .send({ email: 'visitor@example.eu' })
+        .expect(401);
+
+      await request(app.getHttpServer())
+        .post(`${widgetBase}/${conversationId}/email-transcript`)
+        .set('x-bonsai-key', widgetKey)
+        .set('x-bonsai-visitor-secret', 'wrong-secret-padding-0000000000000000')
+        .send({ email: 'visitor@example.eu' })
+        .expect(401);
+
+      expect(sendSpy).not.toHaveBeenCalled();
+      sendSpy.mockRestore();
+    });
+
+    it('rate-limits transcript emails (5/min/project+IP) with 429', async () => {
+      // Own project + key so the project+IP bucket is independent of other tests.
+      const p = await request(app.getHttpServer())
+        .post(`/v1/tenants/${tenantId}/projects`)
+        .set(auth())
+        .send({ name: 'TranscriptRateLimit' })
+        .expect(201);
+      const rlProjectId = (p.body as IdBody).id;
+      const key = await request(app.getHttpServer())
+        .post(`/v1/tenants/${tenantId}/api-keys`)
+        .set(auth())
+        .send({
+          name: 'widget-transcript-rl',
+          kind: 'public_widget',
+          projectId: rlProjectId,
+        })
+        .expect(201);
+      const rlWidgetKey = (key.body as { key: string }).key;
+
+      const started = await request(app.getHttpServer())
+        .post(widgetBase)
+        .set('x-bonsai-key', rlWidgetKey)
+        .send({ language: 'nl' })
+        .expect(201);
+      const { id: conversationId, visitorSecret } = started.body as StartBody;
+
+      jest.spyOn(app.get(MailService), 'send').mockResolvedValue(undefined);
+      const emailReq = (): request.Test =>
+        request(app.getHttpServer())
+          .post(`${widgetBase}/${conversationId}/email-transcript`)
+          .set('x-bonsai-key', rlWidgetKey)
+          .set('x-bonsai-visitor-secret', visitorSecret)
+          .send({ email: 'visitor@example.eu' });
+
+      for (let i = 0; i < 5; i++) {
+        await emailReq().expect(201);
+      }
+      await emailReq().expect(429);
     });
   });
 });
