@@ -209,10 +209,15 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
       .expect(404);
   });
 
-  it('rate-limits unbounded `start` calls (20/min/project+IP) with 429', async () => {
+  it('rate-limits unbounded `start` calls (per-project+IP) with 429', async () => {
     // Uses its own project + widget key so its bucket (keyed by
     // project+IP) is independent of the `start` calls other tests in this
-    // file already made against the shared `widgetKey`/`projectId`.
+    // file already made against the shared `widgetKey`/`projectId`. The
+    // harness sets conversationStartRatePerMin high enough that the many
+    // shared-key `start` calls across this file's describe blocks don't trip
+    // the cap; this test drives its own key up to that configured limit and
+    // asserts the next call is rejected.
+    const START_LIMIT = 100;
     const p = await request(app.getHttpServer())
       .post(`/v1/tenants/${tenantId}/projects`)
       .set(auth())
@@ -236,7 +241,7 @@ describe('public widget conversations e2e (visitor auth + isolation)', () => {
         .set('x-bonsai-key', rlWidgetKey)
         .send({ language: 'nl' });
 
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < START_LIMIT; i++) {
       await start().expect(201);
     }
     await start().expect(429);

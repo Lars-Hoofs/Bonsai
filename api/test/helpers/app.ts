@@ -2,11 +2,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Pool } from 'pg';
 import { AppModule } from '../../src/app.module';
-import {
-  APP_CONFIG,
-  AppConfig,
-  DEFAULT_PLAN_LIMITS,
-} from '../../src/config/config';
+import { APP_CONFIG, AppConfig } from '../../src/config/config';
 import { PG_POOL } from '../../src/db/db.module';
 import { JWT_KEY_GETTER } from '../../src/auth/oidc.verifier';
 import {
@@ -50,7 +46,11 @@ export async function buildTestApp(
     embeddingDim: 1024,
     rateLimitPerMinute: 120,
     widgetConfigRatePerMin: 60,
-    conversationStartRatePerMin: 20,
+    // Generous default so a single spec file that (post feature-merge) drives
+    // many `start` calls against one shared widget key across several describe
+    // blocks doesn't trip the per-project+IP cap. The dedicated rate-limit
+    // specs build their own app with a low override to assert the 429 path.
+    conversationStartRatePerMin: 100,
     transcriptEmailRatePerMin: 5,
     recrawlIntervalMs: 86_400_000,
     ingestionStaleMs: 900_000,
@@ -101,11 +101,24 @@ export async function buildTestApp(
     ocrEnabled: true,
     ocrLanguages: 'nld+eng',
     ocrMaxPages: 20,
-    // Plan/tier limits (#50): built-in defaults (starter maxProjects=2 etc.)
-    // are generous enough that existing tests aren't affected; enforcement
-    // itself is covered by a dedicated plan-limits e2e suite that lowers a
-    // specific tenant's plan/limits via PLAN_LIMITS_JSON overrides.
-    planLimits: DEFAULT_PLAN_LIMITS,
+    // Plan/tier limits (#50): the shared harness runs every plan UNLIMITED so
+    // pre-existing suites (which create many projects/members on the default
+    // 'starter' tenant) are unaffected by enforcement. The dedicated
+    // plan-limits e2e suite fully overrides `planLimits` via cfgOverrides (and
+    // sets a specific tenant's `plan` column) to exercise real enforcement.
+    planLimits: {
+      starter: {
+        maxProjects: null,
+        maxSourcesPerProject: null,
+        maxMembers: null,
+      },
+      pro: { maxProjects: null, maxSourcesPerProject: null, maxMembers: null },
+      enterprise: {
+        maxProjects: null,
+        maxSourcesPerProject: null,
+        maxMembers: null,
+      },
+    },
     // Scheduler off by default in tests so no background interval fires during
     // e2e specs; specs that exercise the runner drive it explicitly.
     reportsSchedulerEnabled: false,
