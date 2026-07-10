@@ -255,7 +255,7 @@ export class AnswerService {
   /** Returns true if an independent model call judges the answer fully grounded. */
   private async selfCheck(
     answer: string,
-    chunks: { text: string; documentTitle: string }[],
+    chunks: { text: string; expandedText?: string; documentTitle: string }[],
   ): Promise<boolean> {
     const sources = renderSources(chunks);
     const messages: LlmMessage[] = [
@@ -296,7 +296,7 @@ export class AnswerService {
 
   private buildPrompt(
     question: string,
-    chunks: { text: string; documentTitle: string }[],
+    chunks: { text: string; expandedText?: string; documentTitle: string }[],
   ): LlmMessage[] {
     const sources = renderSources(chunks);
     const system =
@@ -437,12 +437,19 @@ function sanitizeForPrompt(text: string): string {
 }
 
 function renderSources(
-  chunks: { text: string; documentTitle: string }[],
+  chunks: { text: string; expandedText?: string; documentTitle: string }[],
 ): string {
   const sources = chunks
     .map((c, i) => {
       const title = sanitizeForPrompt(c.documentTitle);
-      const body = sanitizeForPrompt(c.text);
+      // Parent-child context-window expansion (A6): the model sees the wider
+      // `expandedText` (matched chunk + neighboring chunks) so it has more
+      // surrounding context to draw on, while citation identity (`[n]` ->
+      // chunkId/document/title/url in parseCitations) is untouched and keeps
+      // pointing at the small matched chunk. Falls back to `text` for
+      // callers that don't set expandedText (e.g. window=0, or any code path
+      // that hasn't been updated to pass it through).
+      const body = sanitizeForPrompt(c.expandedText ?? c.text);
       // The `[n]` label is the citation key the model must echo back in its
       // answer (enforced by parseCitations); the <source> tags are the
       // injection-defense delimiter that scopes where untrusted chunk text

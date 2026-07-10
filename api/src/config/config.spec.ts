@@ -29,4 +29,20 @@ describe('loadConfig', () => {
     const cfg = loadConfig({ ...valid, MULTI_QUERY_ENABLED: 'false' });
     expect(cfg.multiQueryEnabled).toBe(false);
   });
+
+  it('defaults retrievalWindow to 1', () => {
+    const cfg = loadConfig(valid);
+    expect(cfg.retrievalWindow).toBe(1);
+  });
+
+  it('parses RETRIEVAL_WINDOW', () => {
+    const cfg = loadConfig({ ...valid, RETRIEVAL_WINDOW: '2' });
+    expect(cfg.retrievalWindow).toBe(2);
+  });
+
+  it('rejects a negative RETRIEVAL_WINDOW', () => {
+    expect(() => loadConfig({ ...valid, RETRIEVAL_WINDOW: '-1' })).toThrow(
+      /RETRIEVAL_WINDOW/,
+    );
+  });
 });

@@ -1,10 +1,16 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TenantDbService } from '../tenancy/tenant-db.service';
+import { APP_CONFIG } from '../config/config';
+import type { AppConfig } from '../config/config';
 import { EMBEDDING_PROVIDER } from '../knowledge/embedding/embedding-provider';
 import type { EmbeddingProvider } from '../knowledge/embedding/embedding-provider';
 import { NoopRerankProvider, RERANK_PROVIDER } from './rerank-provider';
 import type { RerankProvider } from './rerank-provider';
+
+/** Fallback used when RetrievalService is constructed directly (tests) without
+ * an AppConfig — matches the config default (window=1). */
+const DEFAULT_RETRIEVAL_WINDOW = 1;
 
 export interface RetrievedChunk {
   chunkId: string;
@@ -12,7 +18,21 @@ export interface RetrievedChunk {
   sourceId: string;
   documentTitle: string;
   originUrl: string | null;
+  /** Position of this chunk within its document (0-based). */
+  ordinal: number;
+  /** Text of ONLY the matched (small, embedded) chunk. Reranking/citation
+   * identity are always based on this, never on `expandedText`. */
   text: string;
+  /**
+   * Parent-child context-window expansion (A6): `text` plus up to
+   * `retrievalWindow` neighboring chunks (by `ordinal`) from the same
+   * document, concatenated in ascending ordinal order (deduped, matched chunk
+   * included). This is what should be sent to the LLM as context — it gives
+   * more surrounding context than the small chunk that was actually matched
+   * for precision. Equals `text` when `retrievalWindow` is 0 or no neighbors
+   * exist.
+   */
+  expandedText: string;
   score: number;
   /** Raw cosine similarity (0..1) of this chunk to the query. Drives confidence. */
   similarity: number;
@@ -40,13 +60,18 @@ function regconfig(language: string): string {
 export class RetrievalService {
   private static readonly RRF_K = 60;
 
+  private readonly retrievalWindow: number;
+
   constructor(
     private readonly tenantDb: TenantDbService,
     @Inject(EMBEDDING_PROVIDER) private readonly embedder: EmbeddingProvider,
     @Optional()
     @Inject(RERANK_PROVIDER)
     private readonly reranker: RerankProvider = new NoopRerankProvider(),
-  ) {}
+    @Optional() @Inject(APP_CONFIG) cfg?: AppConfig,
+  ) {
+    this.retrievalWindow = cfg?.retrievalWindow ?? DEFAULT_RETRIEVAL_WINDOW;
+  }
 
   /**
    * Single-query retrieval. Thin wrapper over `retrieveMulti` with a
@@ -142,7 +167,11 @@ export class RetrievalService {
       .sort((a, b) => b.rr - a.rr || b.m.score - a.m.score)
       .slice(0, topK)
       .map((x) => x.m);
-    return ranked;
+
+    // Parent-child context-window expansion (A6): reranking/top-k selection
+    // above is already final and was based on the small matched `text`; this
+    // only enriches `expandedText` on the selected chunks.
+    return this.expandContext(schemaName, projectId, ranked);
   }
 
   /**
@@ -183,7 +212,7 @@ export class RetrievalService {
             AND c.tsv @@ plainto_tsquery(${cfg}::regconfig, ${query})
           LIMIT ${candidates}
         )
-        SELECT c.id AS chunk_id, c.document_id, c.text,
+        SELECT c.id AS chunk_id, c.document_id, c.ordinal, c.text,
                d.title AS document_title, d.source_id, d.origin_url,
                1.0 - (c.embedding <=> (SELECT v FROM q)) AS similarity,
                COALESCE(1.0 / (${k} + vec.rnk), 0)
@@ -200,15 +229,89 @@ export class RetrievalService {
       return r.rows;
     });
 
-    return rows.map((row) => ({
-      chunkId: row.chunk_id as string,
-      documentId: row.document_id as string,
-      sourceId: row.source_id as string,
-      documentTitle: row.document_title as string,
-      originUrl: (row.origin_url as string | null) ?? null,
-      text: row.text as string,
-      score: Number(row.score),
-      similarity: Number(row.similarity),
-    }));
+    return rows.map((row) => {
+      const text = row.text as string;
+      return {
+        chunkId: row.chunk_id as string,
+        documentId: row.document_id as string,
+        sourceId: row.source_id as string,
+        documentTitle: row.document_title as string,
+        originUrl: (row.origin_url as string | null) ?? null,
+        ordinal: Number(row.ordinal),
+        text,
+        // Placeholder — filled in by `expandContext` once the final top-k is
+        // selected in `retrieveMulti`. Defaulting to `text` here means any
+        // code path that skips expansion (e.g. an empty fused pool) still
+        // satisfies the "expandedText === text when no expansion" contract.
+        expandedText: text,
+        score: Number(row.score),
+        similarity: Number(row.similarity),
+      };
+    });
+  }
+
+  /**
+   * Parent-child context-window expansion (A6): for each of the final,
+   * already-selected/reranked `chunks`, fetches sibling chunks from the same
+   * document whose `ordinal` falls within
+   * [selected.ordinal - retrievalWindow, selected.ordinal + retrievalWindow],
+   * and sets `expandedText` to those neighbors' text (deduped, matched chunk
+   * included) concatenated in ascending ordinal order. Runs as ONE additional
+   * query covering all selected chunks/documents. A no-op (chunks returned
+   * unchanged, `expandedText === text`) when the window is 0 or there are no
+   * chunks to expand — this reproduces pre-A6 behavior exactly.
+   *
+   * Deliberately does NOT affect ranking: the reranker/top-k selection above
+   * already happened against the small matched `text`; this only enriches
+   * the context each selected chunk carries forward to the LLM.
+   */
+  private async expandContext(
+    schemaName: string,
+    projectId: string,
+    chunks: RetrievedChunk[],
+  ): Promise<RetrievedChunk[]> {
+    if (this.retrievalWindow <= 0 || chunks.length === 0) return chunks;
+    const window = this.retrievalWindow;
+
+    const documentIds = [...new Set(chunks.map((c) => c.documentId))];
+    const neighbors = await this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(sql`
+        SELECT document_id, ordinal, text
+        FROM chunks
+        WHERE project_id = ${projectId}
+          AND document_id IN (${sql.join(
+            documentIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})
+        ORDER BY document_id, ordinal ASC
+      `);
+      return r.rows as { document_id: string; ordinal: number; text: string }[];
+    });
+
+    // Group neighbor rows by documentId for O(1) lookup per selected chunk.
+    const byDocument = new Map<string, { ordinal: number; text: string }[]>();
+    for (const row of neighbors) {
+      const list = byDocument.get(row.document_id);
+      const entry = { ordinal: Number(row.ordinal), text: row.text };
+      if (list) {
+        list.push(entry);
+      } else {
+        byDocument.set(row.document_id, [entry]);
+      }
+    }
+
+    return chunks.map((c) => {
+      const siblings = byDocument.get(c.documentId) ?? [];
+      const inWindow = siblings
+        .filter((s) => Math.abs(s.ordinal - c.ordinal) <= window)
+        .sort((a, b) => a.ordinal - b.ordinal);
+      const expandedText =
+        inWindow.length > 0
+          ? [
+              ...new Map(inWindow.map((s) => [s.ordinal, s.text])).values(),
+            ].join('\n\n')
+          : c.text;
+      return { ...c, expandedText };
+    });
   }
 }

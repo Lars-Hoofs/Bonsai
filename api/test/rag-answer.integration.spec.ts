@@ -381,4 +381,90 @@ describe('RAG answer pipeline (anti-hallucination)', () => {
       expect(expandCalls).toBe(0);
     });
   });
+
+  describe('parent-child retrieval via context-window expansion (A6)', () => {
+    // The neighbor chunk holds a fact (the discount code) that is NOT in the
+    // best-matching chunk itself; only with context-window expansion does
+    // that fact reach the model's prompt.
+    const MIDDLE_CHUNK =
+      'Onze garantieprocedure fietsenwinkel verloopt via het garantieformulier op de website.';
+    const NEIGHBOR_CHUNK =
+      'Speciale kortingscode fietsenwinkel voor garantieclaims: FIETS-GARANTIE-2026.';
+
+    let expandProjectId: string;
+
+    const addChunkedDocument = async (
+      title: string,
+      chunkTexts: string[],
+      forProjectId: string,
+    ): Promise<void> => {
+      const embedder = new FakeEmbeddingProvider(1024);
+      await tenantDb.withTenant(schemaName, async (db) => {
+        const src = await db.execute(
+          sql`INSERT INTO knowledge_sources (project_id, type, name, status)
+              VALUES (${forProjectId}, 'manual', ${title}, 'processed') RETURNING id`,
+        );
+        const sourceId = (src.rows[0] as { id: string }).id;
+        const doc = await db.execute(
+          sql`INSERT INTO documents (source_id, project_id, title, content_hash, status)
+              VALUES (${sourceId}, ${forProjectId}, ${title}, ${randomUUID()}, 'processed')
+              RETURNING id`,
+        );
+        const documentId = (doc.rows[0] as { id: string }).id;
+        const vectors = await embedder.embed(chunkTexts);
+        for (let i = 0; i < chunkTexts.length; i++) {
+          const vecLiteral = `[${vectors[i].join(',')}]`;
+          await db.execute(
+            sql`INSERT INTO chunks (document_id, project_id, ordinal, text, embedding, tsv)
+                VALUES (${documentId}, ${forProjectId}, ${i}, ${chunkTexts[i]},
+                        ${vecLiteral}::shared.vector,
+                        to_tsvector('dutch', ${chunkTexts[i]}))`,
+          );
+        }
+      });
+    };
+
+    beforeAll(async () => {
+      expandProjectId = await tenantDb.withTenant(schemaName, async (db) => {
+        const p = await db.execute(
+          sql`INSERT INTO projects (name, settings)
+              VALUES ('BotExpand', '{"confidenceThreshold":0.1}'::jsonb) RETURNING id`,
+        );
+        return (p.rows[0] as { id: string }).id;
+      });
+      // ordinal 0 = MIDDLE_CHUNK (the best match for the question below),
+      // ordinal 1 = NEIGHBOR_CHUNK (holds the discount code fact).
+      await addChunkedDocument(
+        'Fietsenwinkel garantie',
+        [MIDDLE_CHUNK, NEIGHBOR_CHUNK],
+        expandProjectId,
+      );
+    });
+
+    it('sends expandedText (not just the matched chunk text) to the model, while citations still point at the matched chunk', async () => {
+      let userPromptSeenByModel = '';
+      const spy: LlmProvider = {
+        complete: (messages) => {
+          if (isSelfCheckCall(messages)) {
+            return Promise.resolve('{"supported": true}');
+          }
+          const user = messages.find((m) => m.role === 'user');
+          userPromptSeenByModel = user?.content ?? '';
+          return Promise.resolve(`De kortingscode is FIETS-GARANTIE-2026 [1].`);
+        },
+      };
+      const res = await answerWith(spy).answer(
+        schemaName,
+        expandProjectId,
+        'hoe werkt de garantieprocedure van de fietsenwinkel',
+      );
+
+      // The neighbor's fact reached the prompt (context-window expansion).
+      expect(userPromptSeenByModel).toContain('FIETS-GARANTIE-2026');
+      // The answer is grounded/cited and points at the matched chunk's
+      // document — citation identity is unaffected by expansion.
+      expect(res.refused).toBe(false);
+      expect(res.citations[0].documentTitle).toBe('Fietsenwinkel garantie');
+    });
+  });
 });

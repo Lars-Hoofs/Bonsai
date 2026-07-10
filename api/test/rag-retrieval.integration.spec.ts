@@ -9,6 +9,7 @@ import { ChunkingService } from '../src/knowledge/chunking/chunking.service';
 import { FakeEmbeddingProvider } from '../src/knowledge/embedding/fake-embedding.provider';
 import { IngestionService } from '../src/knowledge/ingestion/ingestion.service';
 import { RetrievalService } from '../src/rag/retrieval.service';
+import type { AppConfig } from '../src/config/config';
 import { runControlPlaneMigrations } from '../src/db/run-control-plane-migrations';
 import * as schema from '../src/db/schema';
 import { startPg } from './helpers/pg';
@@ -19,6 +20,7 @@ describe('RAG hybrid retrieval', () => {
   let tenantDb: TenantDbService;
   let ingestion: IngestionService;
   let retrieval: RetrievalService;
+  let embedder: FakeEmbeddingProvider;
   let schemaName: string;
   const projectId = randomUUID();
 
@@ -35,12 +37,51 @@ describe('RAG hybrid retrieval', () => {
     await ingestion.ingestSource(schemaName, id);
   };
 
+  /**
+   * Inserts a document with explicit chunks (ordinal + text, one per array
+   * entry) directly, bypassing ChunkingService's paragraph-packing — so tests
+   * can control chunk boundaries/ordinals precisely instead of fighting the
+   * chunker's greedy-pack-to-maxTokens heuristic. Embeddings/tsvectors are
+   * real (via the deterministic FakeEmbeddingProvider), so hybrid retrieval
+   * behaves normally.
+   */
+  const addChunkedDocument = async (
+    title: string,
+    chunkTexts: string[],
+    forProjectId: string = projectId,
+  ): Promise<string> => {
+    return tenantDb.withTenant(schemaName, async (db) => {
+      const src = await db.execute(
+        sql`INSERT INTO knowledge_sources (project_id, type, name, status)
+            VALUES (${forProjectId}, 'manual', ${title}, 'processed') RETURNING id`,
+      );
+      const sourceId = (src.rows[0] as { id: string }).id;
+      const doc = await db.execute(
+        sql`INSERT INTO documents (source_id, project_id, title, content_hash, status)
+            VALUES (${sourceId}, ${forProjectId}, ${title}, ${randomUUID()}, 'processed')
+            RETURNING id`,
+      );
+      const documentId = (doc.rows[0] as { id: string }).id;
+      const vectors = await embedder.embed(chunkTexts);
+      for (let i = 0; i < chunkTexts.length; i++) {
+        const vecLiteral = `[${vectors[i].join(',')}]`;
+        await db.execute(
+          sql`INSERT INTO chunks (document_id, project_id, ordinal, text, embedding, tsv)
+              VALUES (${documentId}, ${forProjectId}, ${i}, ${chunkTexts[i]},
+                      ${vecLiteral}::shared.vector,
+                      to_tsvector('dutch', ${chunkTexts[i]}))`,
+        );
+      }
+      return documentId;
+    });
+  };
+
   beforeAll(async () => {
     ({ container, pool } = await startPg());
     await runControlPlaneMigrations(pool);
     const prov = new TenantProvisioningService(pool, drizzle(pool, { schema }));
     ({ schemaName } = await prov.createTenant({ name: 'R', slug: 'r' }));
-    const embedder = new FakeEmbeddingProvider(1024);
+    embedder = new FakeEmbeddingProvider(1024);
     tenantDb = new TenantDbService(pool);
     ingestion = new IngestionService(tenantDb, new ChunkingService(), embedder);
     retrieval = new RetrievalService(tenantDb, embedder);
@@ -127,6 +168,66 @@ describe('RAG hybrid retrieval', () => {
         'retourneren',
       ]);
       expect(results).toHaveLength(0);
+    });
+  });
+
+  describe('parent-child retrieval via context-window expansion (A6)', () => {
+    const MIDDLE_CHUNK =
+      'Onze garantieprocedure schoenenwinkel verloopt via het speciale garantieformulier op de website.';
+    const PREV_CHUNK =
+      'Introductie assortiment schoenenwinkel: wij verkopen wandelschoenen, sportschoenen en sandalen.';
+    const NEXT_CHUNK =
+      'Contactgegevens schoenenwinkel: bereikbaar via telefoon, e-mail of het contactformulier.';
+
+    let expandProjectId: string;
+    let expandRetrieval: RetrievalService;
+    let noExpandRetrieval: RetrievalService;
+
+    beforeAll(async () => {
+      // Isolated project so this document's chunks can't be picked up by the
+      // other describe blocks' queries (and vice versa).
+      expandProjectId = randomUUID();
+      await addChunkedDocument(
+        'Schoenenwinkel FAQ',
+        [PREV_CHUNK, MIDDLE_CHUNK, NEXT_CHUNK],
+        expandProjectId,
+      );
+      // Default window (1, matching RETRIEVAL_WINDOW's config default).
+      expandRetrieval = new RetrievalService(tenantDb, embedder);
+      // Window 0: must reproduce pre-A6 behavior exactly.
+      noExpandRetrieval = new RetrievalService(tenantDb, embedder, undefined, {
+        retrievalWindow: 0,
+      } as AppConfig);
+    });
+
+    it('expands the matched middle chunk with neighboring chunk text (window >= 1)', async () => {
+      const results = await expandRetrieval.retrieve(
+        schemaName,
+        expandProjectId,
+        'hoe werkt de garantieprocedure van de schoenenwinkel',
+      );
+      expect(results.length).toBeGreaterThan(0);
+      const top = results[0];
+      // The matched chunk (small, precise) is exactly the garantie text.
+      expect(top.text).toBe(MIDDLE_CHUNK);
+      expect(top.ordinal).toBe(1);
+      // expandedText grows to include BOTH neighbors (window=1 => ordinals 0,1,2).
+      expect(top.expandedText).toContain(MIDDLE_CHUNK);
+      expect(top.expandedText).toContain(PREV_CHUNK);
+      expect(top.expandedText).toContain(NEXT_CHUNK);
+      expect(top.expandedText.length).toBeGreaterThan(top.text.length);
+    });
+
+    it('window=0 leaves expandedText identical to text (pre-A6 behavior)', async () => {
+      const results = await noExpandRetrieval.retrieve(
+        schemaName,
+        expandProjectId,
+        'hoe werkt de garantieprocedure van de schoenenwinkel',
+      );
+      expect(results.length).toBeGreaterThan(0);
+      const top = results[0];
+      expect(top.text).toBe(MIDDLE_CHUNK);
+      expect(top.expandedText).toBe(top.text);
     });
   });
 });

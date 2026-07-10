@@ -92,6 +92,14 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Parent-child retrieval (A6): context-window expansion. The reranker/top-k
+  // selection still runs on the small embedded chunk (precision), but each
+  // returned chunk also carries `expandedText` — that chunk plus up to
+  // `retrievalWindow` neighboring chunks (by `ordinal`) from the same
+  // document, concatenated in order — which is what actually gets sent to
+  // the LLM as context. 0 disables expansion (expandedText === text),
+  // reproducing pre-A6 behavior exactly.
+  RETRIEVAL_WINDOW: z.coerce.number().int().nonnegative().default(1),
   // Billing/paywall enforcement. OFF by default for now (no payment provider
   // wired), so every tenant runs as if on a paid plan: answer usage is still
   // METERED for analytics, but the monthly quota is never enforced (no 402).
@@ -149,6 +157,7 @@ export interface AppConfig {
   s3Bucket?: string;
   selfCheckEnabled: boolean;
   multiQueryEnabled: boolean;
+  retrievalWindow: number;
   billingEnabled: boolean;
   widgetCorsOrigins: string[];
   metricsToken?: string;
@@ -197,6 +206,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     s3Bucket: d.S3_BUCKET,
     selfCheckEnabled: d.SELF_CHECK_ENABLED,
     multiQueryEnabled: d.MULTI_QUERY_ENABLED,
+    retrievalWindow: d.RETRIEVAL_WINDOW,
     billingEnabled: d.BILLING_ENABLED,
     widgetCorsOrigins: d.WIDGET_CORS_ORIGINS.split(',')
       .map((s) => s.trim())
