@@ -28,6 +28,7 @@ import { ChunksModule } from './chunks/chunks.module';
 import { SynonymsModule } from './synonyms/synonyms.module';
 import { MailModule } from './mail/mail.module';
 import { InvitationsModule } from './invitations/invitations.module';
+import { RagDebugModule } from './rag/debug/rag-debug.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { InvitationsModule } from './invitations/invitations.module';
     SynonymsModule,
     MailModule,
     InvitationsModule,
+    RagDebugModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_INTERCEPTOR, useClass: MetricsInterceptor }],
