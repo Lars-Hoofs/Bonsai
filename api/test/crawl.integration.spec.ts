@@ -125,6 +125,30 @@ describe('scheduled re-crawl (BullMQ)', () => {
     );
     expect((docs.rows[0] as { c: number }).c).toBe(1);
   });
+
+  it('respects a per-source recrawl interval (roadmap #19)', async () => {
+    // The source was just synced by the previous test. Give it a long
+    // per-source interval — it is not yet due, so the scan must skip it.
+    await tenantDb.withTenant(schemaName, (db) =>
+      db.execute(
+        sql`UPDATE knowledge_sources
+            SET recrawl_interval_ms = 3600000, last_synced_at = now()
+            WHERE id = ${sourceId}`,
+      ),
+    );
+    expect(await crawl.scanAndEnqueueAll()).toBe(0);
+
+    // A tight interval whose window has already elapsed makes it due again.
+    await tenantDb.withTenant(schemaName, (db) =>
+      db.execute(
+        sql`UPDATE knowledge_sources
+            SET recrawl_interval_ms = 60000,
+                last_synced_at = now() - interval '2 hours'
+            WHERE id = ${sourceId}`,
+      ),
+    );
+    expect(await crawl.scanAndEnqueueAll()).toBe(1);
+  });
 });
 
 async function waitFor(

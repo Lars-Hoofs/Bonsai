@@ -49,8 +49,18 @@ export interface SourceRow {
   status: string;
   errorDetail: string | null;
   lastSyncedAt: string | null;
+  recrawlIntervalMs: number | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One row of the source health overview (roadmap #20): the source's own
+ * last-crawl status/time plus aggregate document/chunk counts and how many of
+ * its documents are currently in error. */
+export interface SourceHealthRow extends SourceRow {
+  documentCount: number;
+  chunkCount: number;
+  failedDocumentCount: number;
 }
 
 function mapSource(r: Record<string, unknown>): SourceRow {
@@ -63,6 +73,8 @@ function mapSource(r: Record<string, unknown>): SourceRow {
     errorDetail: (r.error_detail as string | null) ?? null,
     lastSyncedAt:
       r.last_synced_at instanceof Date ? r.last_synced_at.toISOString() : null,
+    recrawlIntervalMs:
+      r.recrawl_interval_ms == null ? null : Number(r.recrawl_interval_ms),
     createdAt:
       r.created_at instanceof Date
         ? r.created_at.toISOString()
@@ -198,6 +210,99 @@ export class KnowledgeSourcesService {
     await this.get(schemaName, projectId, id); // 404 if not in this project
     await this.ingestOrEnqueue(schemaName, id);
     return this.get(schemaName, projectId, id);
+  }
+
+  /**
+   * Triggers an immediate re-crawl / re-ingest of a source ("crawl now",
+   * roadmap #19). Functionally the same as {@link reprocess} — it re-runs
+   * ingestion (background-enqueued when a Redis queue is active, else inline)
+   * — but records an audit entry since it is an explicit operator action.
+   */
+  async crawlNow(
+    tenant: { id: string; schemaName: string },
+    projectId: string,
+    id: string,
+    actorUserId: string,
+  ): Promise<SourceRow> {
+    await this.get(tenant.schemaName, projectId, id); // 404 if not in project
+    await this.ingestOrEnqueue(tenant.schemaName, id);
+    await this.audit.record({
+      tenantId: tenant.id,
+      actorUserId,
+      action: 'knowledge_source.crawl_now',
+      resource: `knowledge_source:${id}`,
+    });
+    return this.get(tenant.schemaName, projectId, id);
+  }
+
+  /**
+   * Sets (or clears, with `null`) a source's recurring re-crawl interval
+   * (roadmap #19). The scheduled scan (see CrawlService) honours this per-source
+   * interval for website sources; a `null` interval falls back to the global
+   * scan cadence. Setting a schedule does not itself trigger a crawl.
+   */
+  async setSchedule(
+    tenant: { id: string; schemaName: string },
+    projectId: string,
+    id: string,
+    recrawlIntervalMs: number | null,
+    actorUserId: string,
+  ): Promise<SourceRow> {
+    const updated = await this.tenantDb.withTenant(
+      tenant.schemaName,
+      async (db) => {
+        const r = await db.execute(
+          sql`UPDATE knowledge_sources
+              SET recrawl_interval_ms=${recrawlIntervalMs}, updated_at=now()
+              WHERE id=${id} AND project_id=${projectId}
+              RETURNING id`,
+        );
+        return r.rows.length > 0;
+      },
+    );
+    if (!updated) throw new NotFoundException('Knowledge source not found');
+    await this.audit.record({
+      tenantId: tenant.id,
+      actorUserId,
+      action: 'knowledge_source.schedule_updated',
+      resource: `knowledge_source:${id}`,
+      metadata: { recrawlIntervalMs },
+    });
+    return this.get(tenant.schemaName, projectId, id);
+  }
+
+  /**
+   * Aggregate health overview across all sources in a project (roadmap #20):
+   * each source's last-crawl status/time and error, plus its document and chunk
+   * counts and how many of its documents are currently in a failed state. One
+   * grouped query (no per-source round-trips) so it scales with source count.
+   */
+  async healthOverview(
+    schemaName: string,
+    projectId: string,
+  ): Promise<SourceHealthRow[]> {
+    return this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(
+        sql`SELECT s.*,
+                   (SELECT count(*)::int FROM documents d
+                      WHERE d.source_id=s.id) AS document_count,
+                   (SELECT count(*)::int FROM documents d
+                      WHERE d.source_id=s.id AND d.status='failed')
+                     AS failed_document_count,
+                   (SELECT count(*)::int FROM chunks c
+                      JOIN documents d ON d.id=c.document_id
+                      WHERE d.source_id=s.id) AS chunk_count
+            FROM knowledge_sources s
+            WHERE s.project_id=${projectId}
+            ORDER BY s.created_at`,
+      );
+      return r.rows.map((row) => ({
+        ...mapSource(row),
+        documentCount: row.document_count as number,
+        chunkCount: row.chunk_count as number,
+        failedDocumentCount: row.failed_document_count as number,
+      }));
+    });
   }
 
   async listDocuments(
