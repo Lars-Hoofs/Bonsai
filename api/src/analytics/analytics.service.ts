@@ -26,6 +26,61 @@ export interface CsatSummary {
   messageFeedbackDown: number;
 }
 
+/** One day in the deflection trend series. */
+export interface DeflectionPoint {
+  /** UTC calendar day, 'YYYY-MM-DD'. */
+  date: string;
+  conversations: number;
+  /** Conversations with no human handover/escalation. */
+  deflected: number;
+  /** Conversations that were handed over to / escalated to a human. */
+  handedOver: number;
+  /** deflected / conversations for the day (0 when no conversations). */
+  deflectionRate: number;
+}
+
+export interface DeflectionSummary {
+  /** Inclusive UTC start day of the range, 'YYYY-MM-DD'. */
+  from: string;
+  /** Inclusive UTC end day of the range, 'YYYY-MM-DD'. */
+  to: string;
+  days: number;
+  conversations: number;
+  deflected: number;
+  handedOver: number;
+  /** Overall deflection rate across the whole range (0 when no conversations). */
+  deflectionRate: number;
+  /** Per-day series, oldest first, with zero-filled gaps. */
+  trend: DeflectionPoint[];
+}
+
+/** Default trend range (days) when the caller doesn't specify one. */
+export const DEFLECTION_DEFAULT_DAYS = 30;
+/** Clamp: keep the range bounded so the series/query stays cheap. */
+export const DEFLECTION_MAX_DAYS = 365;
+
+/** A UTC calendar day 'YYYY-MM-DD' for the given instant. */
+function utcDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Inclusive list of UTC calendar days ending at (and including) `now`'s day,
+ * oldest first — the trend's x-axis. Used to zero-fill days with no
+ * conversations so the series is dense (one point per day) regardless of
+ * whether any traffic occurred.
+ */
+export function trailingDays(now: Date, count: number): string[] {
+  const days: string[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i),
+    );
+    days.push(utcDay(d));
+  }
+  return days;
+}
+
 // Visitor-entered free text can be arbitrarily long and may contain pasted
 // PII (names, addresses, order numbers, etc.). `unanswered` surfaces this
 // text verbatim to tenant staff for KB-improvement purposes, so the payload
@@ -158,6 +213,95 @@ export class AnalyticsService {
             : positiveConversations / ratedConversations,
         messageFeedbackUp: Number(row.feedback_up),
         messageFeedbackDown: Number(row.feedback_down),
+      };
+    });
+  }
+
+  /**
+   * Deflection rate & trend (#44): the share of conversations the bot
+   * resolved on its own, i.e. WITHOUT a human handover/escalation. A
+   * conversation counts as "handed over" when it has at least one row in
+   * `handovers` (the same signal the summary's `escalations`/`resolutionRate`
+   * use). Deflected = total - handed over.
+   *
+   * Computed on read (no stored aggregate): conversations in the range are
+   * bucketed by the UTC calendar day of their `started_at`, and each day is
+   * left-joined against a per-conversation "was handed over" flag. The
+   * per-day series is zero-filled over the whole requested range so quiet
+   * days still appear as points (deflectionRate 0/0 -> 0).
+   *
+   * `days` is clamped to [1, DEFLECTION_MAX_DAYS]; a non-positive/NaN value
+   * falls back to DEFLECTION_DEFAULT_DAYS.
+   */
+  async deflection(
+    schemaName: string,
+    projectId: string,
+    days?: number,
+  ): Promise<DeflectionSummary> {
+    const range =
+      days !== undefined && Number.isFinite(days) && days > 0
+        ? Math.min(Math.floor(days), DEFLECTION_MAX_DAYS)
+        : DEFLECTION_DEFAULT_DAYS;
+    const now = new Date();
+    const allDays = trailingDays(now, range);
+    const from = allDays[0];
+    const to = allDays[allDays.length - 1];
+    // Inclusive lower bound at 00:00 UTC of the first day; the upper bound is
+    // open-ended (>= from) so "today, so far" is included.
+    const fromTs = `${from}T00:00:00.000Z`;
+
+    return this.tenantDb.withTenant(schemaName, async (db) => {
+      const r = await db.execute(sql`
+        SELECT
+          to_char(date_trunc('day', c.started_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+          count(*)::int AS conversations,
+          count(*) FILTER (WHERE h.conversation_id IS NOT NULL)::int AS handed_over
+        FROM conversations c
+        LEFT JOIN (
+          SELECT DISTINCT conversation_id FROM handovers
+        ) h ON h.conversation_id = c.id
+        WHERE c.project_id = ${projectId}
+          AND c.started_at >= ${fromTs}
+        GROUP BY day
+      `);
+
+      const byDay = new Map<
+        string,
+        { conversations: number; handedOver: number }
+      >();
+      for (const row of r.rows) {
+        byDay.set(row.day as string, {
+          conversations: Number(row.conversations),
+          handedOver: Number(row.handed_over),
+        });
+      }
+
+      const trend: DeflectionPoint[] = allDays.map((date) => {
+        const agg = byDay.get(date);
+        const conversations = agg?.conversations ?? 0;
+        const handedOver = agg?.handedOver ?? 0;
+        const deflected = conversations - handedOver;
+        return {
+          date,
+          conversations,
+          deflected,
+          handedOver,
+          deflectionRate: conversations === 0 ? 0 : deflected / conversations,
+        };
+      });
+
+      const conversations = trend.reduce((s, p) => s + p.conversations, 0);
+      const handedOver = trend.reduce((s, p) => s + p.handedOver, 0);
+      const deflected = conversations - handedOver;
+      return {
+        from,
+        to,
+        days: range,
+        conversations,
+        deflected,
+        handedOver,
+        deflectionRate: conversations === 0 ? 0 : deflected / conversations,
+        trend,
       };
     });
   }
