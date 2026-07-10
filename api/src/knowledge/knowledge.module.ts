@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TenancyModule } from '../tenancy/tenancy.module';
+import { KbBulkService } from './bulk/kb-bulk.service';
 import { ChunkingService } from './chunking/chunking.service';
 import { EmbeddingModule } from './embedding/embedding.module';
 import { IngestionService } from './ingestion/ingestion.service';
@@ -15,6 +16,7 @@ import { KnowledgeSourcesService } from './knowledge-sources.service';
     IngestionService,
     IngestionQueueService,
     KnowledgeSourcesService,
+    KbBulkService,
   ],
   exports: [KnowledgeSourcesService, IngestionService],
 })
